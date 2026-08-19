@@ -1,14 +1,14 @@
 "use client";
 
 import Image from "next/image";
-import { useActionState } from "react";
+import { Suspense, useActionState } from "react";
 import { LockKeyhole, LogIn } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { login, type LoginState } from "./actions";
 
 const estadoInicial: LoginState = {};
 
-export default function LoginPage() {
+function LoginContent() {
   const params = useSearchParams();
 
   const [estado, acao, pendente] = useActionState(
@@ -47,7 +47,11 @@ export default function LoginPage() {
         </div>
 
         <form action={acao} className="mt-7 space-y-4">
-          <input type="hidden" name="next" value={proximo} />
+          <input
+            type="hidden"
+            name="next"
+            value={proximo}
+          />
 
           <label className="block">
             <span className="mb-1.5 block text-sm font-semibold">
@@ -103,5 +107,21 @@ export default function LoginPage() {
         </form>
       </div>
     </main>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="flex min-h-screen items-center justify-center bg-zinc-100">
+          <p className="text-sm text-zinc-500">
+            Carregando...
+          </p>
+        </main>
+      }
+    >
+      <LoginContent />
+    </Suspense>
   );
 }
