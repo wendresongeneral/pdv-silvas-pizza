@@ -73,7 +73,7 @@ export async function GET(
       supabase
         .from("produtos")
         .select(
-          "id, nome, preco, categoria_id, imagem_url, favorito",
+          "id, nome, preco, categoria_id, imagem_url, favorito, controla_estoque, estoque_atual, estoque_minimo",
         )
         .eq("ativo", true)
         .order("nome"),

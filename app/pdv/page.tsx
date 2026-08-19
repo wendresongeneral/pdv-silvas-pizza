@@ -19,6 +19,9 @@ type Produto = {
   favorito: boolean;
   categoria_id: string | null;
   imagem_url: string | null;
+  controla_estoque: boolean;
+  estoque_atual: number;
+  estoque_minimo: number;
   ativo?: boolean | null;
 };
 
@@ -108,7 +111,7 @@ export default function PdvPage() {
 
       supabase
         .from("produtos")
-        .select("id, nome, preco, custo, favorito, ativo, categoria_id, imagem_url",)
+        .select("id, nome, preco, custo, favorito, ativo, categoria_id, imagem_url, controla_estoque, estoque_atual, estoque_minimo")
         .eq("ativo", true)
         .order("nome"),
     ]);
@@ -143,6 +146,20 @@ export default function PdvPage() {
     produto: Produto,
     adicionais: AdicionalEscolhido[] = [],
   ) {
+    const quantidadeAtualNoCarrinho = quantidadeNoCarrinho(produto.id);
+
+    if (
+      produto.controla_estoque &&
+      quantidadeAtualNoCarrinho >= Number(produto.estoque_atual ?? 0)
+    ) {
+      setMensagem(
+        produto.estoque_atual <= 0
+          ? `${produto.nome} está sem estoque.`
+          : `Só existem ${produto.estoque_atual} unidade(s) de ${produto.nome}.`,
+      );
+      return;
+    }
+
     const precoBase = Number(produto.preco);
     const custoUnitario = Number(produto.custo ?? 0);
 
@@ -457,91 +474,30 @@ export default function PdvPage() {
     setMensagem("");
 
     try {
-      const { data: ultimaVenda, error: erroUltimaVenda } =
-        await supabase
-          .from("vendas")
-          .select("numero")
-          .order("numero", { ascending: false })
-          .limit(1)
-          .maybeSingle();
+      const { data, error } = await supabase.rpc(
+        "registrar_venda_pdv",
+        {
+          p_forma_pagamento: formaPagamento,
+          p_itens: carrinho.map((item) => ({
+            produto_id: item.produtoId,
+            quantidade: item.quantidade,
+            adicionais: item.adicionais.map((adicional) => adicional.id),
+          })),
+        },
+      );
 
-      if (erroUltimaVenda) {
-        throw erroUltimaVenda;
-      }
-
-      const proximoNumero = (ultimaVenda?.numero ?? 0) + 1;
-
-      const { data: vendaCriada, error: erroVenda } =
-        await supabase
-          .from("vendas")
-          .insert({
-            numero: proximoNumero,
-            data_venda: new Date().toISOString(),
-            subtotal: total,
-            desconto: 0,
-            total,
-            forma_pagamento: formaPagamento,
-          })
-          .select("id")
-          .single();
-
-      if (erroVenda || !vendaCriada) {
-        throw erroVenda ?? new Error("A venda não foi criada.");
-      }
-
-      for (const item of carrinho) {
-        const { data: itemCriado, error: erroItem } =
-          await supabase
-            .from("itens_venda")
-            .insert({
-              venda_id: vendaCriada.id,
-              produto_id: item.produtoId,
-              quantidade: item.quantidade,
-              valor_unitario: item.precoUnitario,
-              custo_unitario: item.custoUnitario,
-              subtotal:
-                item.precoUnitario * item.quantidade,
-            })
-            .select("id")
-            .single();
-
-        if (erroItem || !itemCriado) {
-          throw (
-            erroItem ??
-            new Error(
-              `Não foi possível salvar o item ${item.nome}.`,
-            )
-          );
-        }
-
-        if (item.adicionais.length > 0) {
-          const adicionaisVenda = item.adicionais.map(
-            (adicional) => ({
-              item_venda_id: itemCriado.id,
-              adicional_id: adicional.id,
-              nome: adicional.nome,
-              valor: adicional.preco,
-              quantidade: item.quantidade,
-            }),
-          );
-
-          const { error: erroAdicionaisVenda } = await supabase
-            .from("itens_venda_adicionais")
-            .insert(adicionaisVenda);
-
-          if (erroAdicionaisVenda) {
-            throw erroAdicionaisVenda;
-          }
-        }
-      }
+      if (error) throw new Error(error.message);
 
       setCarrinho([]);
       setMensagem(
-        `Venda de ${moeda(total)} finalizada com sucesso.`,
+        `Venda #${data?.numero_venda ?? ""} de ${moeda(
+          Number(data?.total ?? total),
+        )} finalizada com sucesso.`,
       );
+
+      await carregarDados();
     } catch (error) {
       console.error("Erro ao finalizar venda:", error);
-
       setMensagem(
         error instanceof Error
           ? error.message
@@ -648,7 +604,11 @@ export default function PdvPage() {
                   return (
                     <div
                       key={produto.id}
-                      className="relative overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm transition hover:-translate-y-1 hover:border-red-500 hover:shadow-xl"
+                      className={`relative overflow-hidden rounded-2xl border bg-white shadow-sm transition ${
+                        produto.controla_estoque && produto.estoque_atual <= 0
+                          ? "border-red-400 ring-2 ring-red-100"
+                          : "border-zinc-200 hover:-translate-y-1 hover:border-red-500 hover:shadow-xl"
+                      }`}
                     >
                       {/* ESTRELA DE FAVORITO */}
                       <button
@@ -684,21 +644,40 @@ export default function PdvPage() {
                         </div>
                       )}
 
+                      {produto.controla_estoque && (
+                        <div
+                          className={`absolute left-3 top-14 z-20 rounded-full px-2.5 py-1 text-xs font-bold shadow-sm ${
+                            produto.estoque_atual <= 0
+                              ? "bg-red-600 text-white"
+                              : produto.estoque_atual <= produto.estoque_minimo
+                                ? "bg-amber-400 text-amber-950"
+                                : "bg-white/95 text-zinc-600"
+                          }`}
+                        >
+                          {produto.estoque_atual <= 0
+                            ? "SEM ESTOQUE"
+                            : `${produto.estoque_atual} restante(s)`}
+                        </div>
+                      )}
+
                       {/* ÁREA CLICÁVEL DO PRODUTO */}
                       <button
                         type="button"
                         onClick={() => abrirProduto(produto)}
-                        disabled={carregandoAdicionais}
-                        className="block w-full text-left disabled:cursor-wait disabled:opacity-70"
+                        disabled={
+                          carregandoAdicionais ||
+                          (produto.controla_estoque && produto.estoque_atual <= 0)
+                        }
+                        className="block w-full text-left disabled:cursor-not-allowed disabled:opacity-60"
                       >
                         {produto.imagem_url ? (
                           <img
                             src={produto.imagem_url}
                             alt={produto.nome}
-                            className="h-32 w-full object-cover"
+                            className="h-48 w-full bg-white object-contain p-2"
                           />
                         ) : (
-                          <div className="flex h-32 w-full items-center justify-center bg-zinc-100 text-5xl">
+                          <div className="flex h-48 w-full items-center justify-center bg-zinc-100 text-5xl">
                             🍕
                           </div>
                         )}
@@ -714,14 +693,18 @@ export default function PdvPage() {
 
                           <div
                             className={`mt-4 rounded-xl py-3 text-center font-semibold text-white ${
-                              quantidadeProduto > 0
-                                ? "bg-green-600"
-                                : "bg-red-600"
+                              produto.controla_estoque && produto.estoque_atual <= 0
+                                ? "bg-zinc-400"
+                                : quantidadeProduto > 0
+                                  ? "bg-green-600"
+                                  : "bg-red-600"
                             }`}
                           >
-                            {quantidadeProduto > 0
-                              ? `${quantidadeProduto} no pedido`
-                              : "+ Adicionar"}
+                            {produto.controla_estoque && produto.estoque_atual <= 0
+                              ? "Indisponível"
+                              : quantidadeProduto > 0
+                                ? `${quantidadeProduto} no pedido`
+                                : "+ Adicionar"}
                           </div>
                         </div>
                       </button>
