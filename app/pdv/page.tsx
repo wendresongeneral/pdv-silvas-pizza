@@ -50,12 +50,6 @@ type ItemCarrinho = {
 
 type FormaPagamento = "Dinheiro" | "Cartão" | "Pix";
 
-type Mesa = {
-  id: string;
-  numero: number;
-  nome: string | null;
-};
-
 type ComandaAberta = {
   id: string;
   numero: number;
@@ -70,9 +64,6 @@ type Atendimento = {
   tipo: "avulsa" | "comanda";
   comandaId?: string;
   numero?: number;
-  mesaId?: string;
-  mesaNumero?: number;
-  mesaNome?: string | null;
   clienteNome?: string | null;
   carrinho: ItemCarrinho[];
 };
@@ -103,11 +94,9 @@ export default function PdvPage() {
     { chave: "avulsa", tipo: "avulsa", carrinho: [] },
   ]);
   const [atendimentoAtivo, setAtendimentoAtivo] = useState("avulsa");
-  const [mesas, setMesas] = useState<Mesa[]>([]);
   const [comandasAbertas, setComandasAbertas] = useState<ComandaAberta[]>([]);
   const [modalNovaComanda, setModalNovaComanda] = useState(false);
   const [clienteNovaComanda, setClienteNovaComanda] = useState("");
-  const [mesaNovaComanda, setMesaNovaComanda] = useState("");
   const [abrindoComanda, setAbrindoComanda] = useState(false);
 
   const atendimentoAtual =
@@ -173,28 +162,19 @@ export default function PdvPage() {
   }, []);
 
   async function carregarComandas() {
-    const [mesasResp, comandasResp] = await Promise.all([
-      supabase
-        .from("mesas")
-        .select("id, numero, nome")
-        .eq("ativo", true)
-        .order("numero"),
-      supabase
-        .from("comandas")
-        .select("id, numero, mesa_id, cliente_nome, total, status")
-        .eq("status", "Aberta")
-        .order("numero"),
-    ]);
+    const { data, error } = await supabase
+      .from("comandas")
+      .select("id, numero, mesa_id, cliente_nome, total, status")
+      .eq("status", "Aberta")
+      .order("numero");
 
-    if (mesasResp.error || comandasResp.error) {
-      console.error("Erro ao carregar comandas:", mesasResp.error || comandasResp.error);
+    if (error) {
+      console.error("Erro ao carregar comandas:", error);
       return;
     }
 
-    const mesasData = (mesasResp.data ?? []) as Mesa[];
-    const comandasData = (comandasResp.data ?? []) as ComandaAberta[];
+    const comandasData = (data ?? []) as ComandaAberta[];
 
-    setMesas(mesasData);
     setComandasAbertas(comandasData);
 
     setAtendimentos((atuais) => {
@@ -204,16 +184,12 @@ export default function PdvPage() {
 
       const abas = comandasData.map((comanda): Atendimento => {
         const existente = atuais.find((item) => item.comandaId === comanda.id);
-        const mesa = mesasData.find((item) => item.id === comanda.mesa_id);
 
         return {
           chave: `comanda:${comanda.id}`,
           tipo: "comanda",
           comandaId: comanda.id,
           numero: comanda.numero,
-          mesaId: comanda.mesa_id,
-          mesaNumero: mesa?.numero,
-          mesaNome: mesa?.nome,
           clienteNome: comanda.cliente_nome,
           carrinho: existente?.carrinho ?? [],
         };
@@ -225,14 +201,9 @@ export default function PdvPage() {
 
   async function abrirNovaComanda() {
     const nome = clienteNovaComanda.trim();
-    const numeroMesa = Number(mesaNovaComanda);
 
     if (!nome) {
       setMensagem("Informe o nome do cliente.");
-      return;
-    }
-    if (!numeroMesa) {
-      setMensagem("Selecione uma mesa.");
       return;
     }
 
@@ -240,7 +211,6 @@ export default function PdvPage() {
     setMensagem("");
 
     const { data, error } = await supabase.rpc("abrir_comanda", {
-      p_mesa_numero: numeroMesa,
       p_cliente_nome: nome,
     });
 
@@ -252,19 +222,28 @@ export default function PdvPage() {
     }
 
     setClienteNovaComanda("");
-    setMesaNovaComanda("");
     setModalNovaComanda(false);
+
     await carregarComandas();
 
     if (data?.comanda_id) {
       setAtendimentoAtivo(`comanda:${data.comanda_id}`);
     }
 
-    setMensagem(`Comanda #${data?.numero ?? ""} aberta para ${data?.cliente_nome ?? nome}.`);
+    setMensagem(
+      `Comanda #${data?.numero ?? ""} aberta para ${
+        data?.cliente_nome ?? nome
+      }.`,
+    );
   }
 
   async function enviarPedidoComanda() {
-    if (atendimentoAtual?.tipo !== "comanda" || !atendimentoAtual.mesaNumero) return;
+    if (
+      atendimentoAtual?.tipo !== "comanda" ||
+      !atendimentoAtual.comandaId
+    ) {
+      return;
+    }
 
     if (carrinho.length === 0) {
       setMensagem("Adicione pelo menos um produto.");
@@ -275,25 +254,31 @@ export default function PdvPage() {
     setMensagem("");
 
     try {
-      const { error } = await supabase.rpc("enviar_pedido_mesa", {
-        p_mesa_numero: atendimentoAtual.mesaNumero,
+      const { error } = await supabase.rpc("enviar_pedido_comanda", {
+        p_comanda_id: atendimentoAtual.comandaId,
         p_itens: carrinho.map((item) => ({
           produto_id: item.produtoId,
           quantidade: item.quantidade,
           adicionais: item.adicionais.map((adicional) => adicional.id),
         })),
         p_observacao: null,
-        p_cliente_nome: atendimentoAtual.clienteNome ?? null,
       });
 
       if (error) throw new Error(error.message);
 
       setCarrinho([]);
-      setMensagem(`Pedido enviado para a Comanda #${atendimentoAtual.numero ?? ""}.`);
+      setMensagem(
+        `Pedido enviado para a Comanda #${atendimentoAtual.numero ?? ""}.`,
+      );
+
       await Promise.all([carregarDados(), carregarComandas()]);
     } catch (error) {
       console.error("Erro ao enviar pedido para a comanda:", error);
-      setMensagem(error instanceof Error ? error.message : "Não foi possível enviar o pedido.");
+      setMensagem(
+        error instanceof Error
+          ? error.message
+          : "Não foi possível enviar o pedido.",
+      );
     } finally {
       setFinalizando(false);
     }
@@ -664,11 +649,6 @@ export default function PdvPage() {
     Number(produtoSelecionado?.preco ?? 0) +
     totalAdicionaisModal;
 
-  const mesasDisponiveis = useMemo(() => {
-    const ocupadas = new Set(comandasAbertas.map((comanda) => comanda.mesa_id));
-    return mesas.filter((mesa) => !ocupadas.has(mesa.id));
-  }, [mesas, comandasAbertas]);
-
   async function finalizarVenda() {
     if (atendimentoAtual?.tipo === "comanda") {
       await enviarPedidoComanda();
@@ -767,9 +747,7 @@ export default function PdvPage() {
             >
               {atendimento.tipo === "avulsa"
                 ? "Venda avulsa"
-                : `#${atendimento.numero} ${atendimento.clienteNome || "Cliente"} • ${
-                    atendimento.mesaNome || `Mesa ${atendimento.mesaNumero ?? "?"}`
-                  }`}
+                : `#${atendimento.numero} ${atendimento.clienteNome || "Cliente"}`}
             </button>
           ))}
 
@@ -777,7 +755,6 @@ export default function PdvPage() {
             type="button"
             onClick={() => {
               setClienteNovaComanda("");
-              setMesaNovaComanda("");
               setModalNovaComanda(true);
               setMensagem("");
             }}
@@ -973,8 +950,7 @@ export default function PdvPage() {
             </h2>
             {atendimentoAtual?.tipo === "comanda" && (
               <p className="font-semibold text-red-600">
-                {atendimentoAtual.clienteNome || "Cliente"} •{" "}
-                {atendimentoAtual.mesaNome || `Mesa ${atendimentoAtual.mesaNumero ?? "?"}`}
+                {atendimentoAtual.clienteNome || "Cliente"}
               </p>
             )}
 
@@ -1212,21 +1188,6 @@ export default function PdvPage() {
               />
             </div>
 
-            <div>
-              <label className="mb-2 block text-sm font-semibold">Mesa</label>
-              <select
-                value={mesaNovaComanda}
-                onChange={(event) => setMesaNovaComanda(event.target.value)}
-                className="w-full rounded-xl border border-zinc-300 bg-white p-3 outline-none focus:border-red-500"
-              >
-                <option value="">Selecione uma mesa</option>
-                {mesasDisponiveis.map((mesa) => (
-                  <option key={mesa.id} value={mesa.numero}>
-                    {mesa.nome || `Mesa ${mesa.numero}`}
-                  </option>
-                ))}
-              </select>
-            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-3 border-t border-zinc-200 bg-zinc-50 p-5">
@@ -1240,7 +1201,7 @@ export default function PdvPage() {
             <button
               type="button"
               onClick={abrirNovaComanda}
-              disabled={abrindoComanda || !clienteNovaComanda.trim() || !mesaNovaComanda}
+              disabled={abrindoComanda || !clienteNovaComanda.trim()}
               className="rounded-xl bg-red-600 px-4 py-3 font-bold text-white disabled:bg-zinc-300"
             >
               {abrindoComanda ? "Abrindo..." : "Abrir comanda"}
