@@ -189,13 +189,18 @@ export async function POST(
       {
         p_mesa_numero: numeroMesa,
         p_itens: itens,
+
         p_observacao:
           typeof body?.observacao === "string"
             ? body.observacao.slice(0, 500)
             : null,
+
+        p_cliente_nome:
+          typeof body?.cliente_nome === "string"
+            ? body.cliente_nome.trim().slice(0, 80)
+            : null,
       },
     );
-
     if (error) throw error;
 
     return NextResponse.json({

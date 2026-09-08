@@ -3,7 +3,7 @@
 import { MouseEvent, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
-import { ClipboardList, QrCode, Star } from "lucide-react";
+import { ClipboardList, Plus, QrCode, Star, X } from "lucide-react";
 
 type Categoria = {
   id: string;
@@ -50,6 +50,33 @@ type ItemCarrinho = {
 
 type FormaPagamento = "Dinheiro" | "Cartão" | "Pix";
 
+type Mesa = {
+  id: string;
+  numero: number;
+  nome: string | null;
+};
+
+type ComandaAberta = {
+  id: string;
+  numero: number;
+  mesa_id: string;
+  cliente_nome: string | null;
+  total: number | string;
+  status: string;
+};
+
+type Atendimento = {
+  chave: string;
+  tipo: "avulsa" | "comanda";
+  comandaId?: string;
+  numero?: number;
+  mesaId?: string;
+  mesaNumero?: number;
+  mesaNome?: string | null;
+  clienteNome?: string | null;
+  carrinho: ItemCarrinho[];
+};
+
 function moeda(valor: number) {
   return new Intl.NumberFormat("pt-BR", {
     style: "currency",
@@ -72,7 +99,39 @@ function criarChaveItem(
 export default function PdvPage() {
   const [categorias, setCategorias] = useState<Categoria[]>([]);
   const [produtos, setProdutos] = useState<Produto[]>([]);
-  const [carrinho, setCarrinho] = useState<ItemCarrinho[]>([]);
+  const [atendimentos, setAtendimentos] = useState<Atendimento[]>([
+    { chave: "avulsa", tipo: "avulsa", carrinho: [] },
+  ]);
+  const [atendimentoAtivo, setAtendimentoAtivo] = useState("avulsa");
+  const [mesas, setMesas] = useState<Mesa[]>([]);
+  const [comandasAbertas, setComandasAbertas] = useState<ComandaAberta[]>([]);
+  const [modalNovaComanda, setModalNovaComanda] = useState(false);
+  const [clienteNovaComanda, setClienteNovaComanda] = useState("");
+  const [mesaNovaComanda, setMesaNovaComanda] = useState("");
+  const [abrindoComanda, setAbrindoComanda] = useState(false);
+
+  const atendimentoAtual =
+    atendimentos.find((item) => item.chave === atendimentoAtivo) ??
+    atendimentos[0];
+
+  const carrinho = atendimentoAtual?.carrinho ?? [];
+
+  function setCarrinho(
+    atualizador:
+      | ItemCarrinho[]
+      | ((atual: ItemCarrinho[]) => ItemCarrinho[]),
+  ) {
+    setAtendimentos((atuais) =>
+      atuais.map((atendimento) => {
+        if (atendimento.chave !== atendimentoAtivo) return atendimento;
+        const proximo =
+          typeof atualizador === "function"
+            ? atualizador(atendimento.carrinho)
+            : atualizador;
+        return { ...atendimento, carrinho: proximo };
+      }),
+    );
+  }
 
   const [categoriaSelecionada, setCategoriaSelecionada] =
     useState<string | "todas">("todas");
@@ -97,7 +156,148 @@ export default function PdvPage() {
 
   useEffect(() => {
     carregarDados();
+    carregarComandas();
+
+    const canal = supabase
+      .channel("pdv-comandas-abertas")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "comandas" },
+        carregarComandas,
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(canal);
+    };
   }, []);
+
+  async function carregarComandas() {
+    const [mesasResp, comandasResp] = await Promise.all([
+      supabase
+        .from("mesas")
+        .select("id, numero, nome")
+        .eq("ativo", true)
+        .order("numero"),
+      supabase
+        .from("comandas")
+        .select("id, numero, mesa_id, cliente_nome, total, status")
+        .eq("status", "Aberta")
+        .order("numero"),
+    ]);
+
+    if (mesasResp.error || comandasResp.error) {
+      console.error("Erro ao carregar comandas:", mesasResp.error || comandasResp.error);
+      return;
+    }
+
+    const mesasData = (mesasResp.data ?? []) as Mesa[];
+    const comandasData = (comandasResp.data ?? []) as ComandaAberta[];
+
+    setMesas(mesasData);
+    setComandasAbertas(comandasData);
+
+    setAtendimentos((atuais) => {
+      const avulsa =
+        atuais.find((item) => item.chave === "avulsa") ??
+        ({ chave: "avulsa", tipo: "avulsa", carrinho: [] } as Atendimento);
+
+      const abas = comandasData.map((comanda): Atendimento => {
+        const existente = atuais.find((item) => item.comandaId === comanda.id);
+        const mesa = mesasData.find((item) => item.id === comanda.mesa_id);
+
+        return {
+          chave: `comanda:${comanda.id}`,
+          tipo: "comanda",
+          comandaId: comanda.id,
+          numero: comanda.numero,
+          mesaId: comanda.mesa_id,
+          mesaNumero: mesa?.numero,
+          mesaNome: mesa?.nome,
+          clienteNome: comanda.cliente_nome,
+          carrinho: existente?.carrinho ?? [],
+        };
+      });
+
+      return [avulsa, ...abas];
+    });
+  }
+
+  async function abrirNovaComanda() {
+    const nome = clienteNovaComanda.trim();
+    const numeroMesa = Number(mesaNovaComanda);
+
+    if (!nome) {
+      setMensagem("Informe o nome do cliente.");
+      return;
+    }
+    if (!numeroMesa) {
+      setMensagem("Selecione uma mesa.");
+      return;
+    }
+
+    setAbrindoComanda(true);
+    setMensagem("");
+
+    const { data, error } = await supabase.rpc("abrir_comanda", {
+      p_mesa_numero: numeroMesa,
+      p_cliente_nome: nome,
+    });
+
+    setAbrindoComanda(false);
+
+    if (error) {
+      setMensagem(error.message);
+      return;
+    }
+
+    setClienteNovaComanda("");
+    setMesaNovaComanda("");
+    setModalNovaComanda(false);
+    await carregarComandas();
+
+    if (data?.comanda_id) {
+      setAtendimentoAtivo(`comanda:${data.comanda_id}`);
+    }
+
+    setMensagem(`Comanda #${data?.numero ?? ""} aberta para ${data?.cliente_nome ?? nome}.`);
+  }
+
+  async function enviarPedidoComanda() {
+    if (atendimentoAtual?.tipo !== "comanda" || !atendimentoAtual.mesaNumero) return;
+
+    if (carrinho.length === 0) {
+      setMensagem("Adicione pelo menos um produto.");
+      return;
+    }
+
+    setFinalizando(true);
+    setMensagem("");
+
+    try {
+      const { error } = await supabase.rpc("enviar_pedido_mesa", {
+        p_mesa_numero: atendimentoAtual.mesaNumero,
+        p_itens: carrinho.map((item) => ({
+          produto_id: item.produtoId,
+          quantidade: item.quantidade,
+          adicionais: item.adicionais.map((adicional) => adicional.id),
+        })),
+        p_observacao: null,
+        p_cliente_nome: atendimentoAtual.clienteNome ?? null,
+      });
+
+      if (error) throw new Error(error.message);
+
+      setCarrinho([]);
+      setMensagem(`Pedido enviado para a Comanda #${atendimentoAtual.numero ?? ""}.`);
+      await Promise.all([carregarDados(), carregarComandas()]);
+    } catch (error) {
+      console.error("Erro ao enviar pedido para a comanda:", error);
+      setMensagem(error instanceof Error ? error.message : "Não foi possível enviar o pedido.");
+    } finally {
+      setFinalizando(false);
+    }
+  }
 
   async function carregarDados() {
     setCarregando(true);
@@ -464,7 +664,17 @@ export default function PdvPage() {
     Number(produtoSelecionado?.preco ?? 0) +
     totalAdicionaisModal;
 
+  const mesasDisponiveis = useMemo(() => {
+    const ocupadas = new Set(comandasAbertas.map((comanda) => comanda.mesa_id));
+    return mesas.filter((mesa) => !ocupadas.has(mesa.id));
+  }, [mesas, comandasAbertas]);
+
   async function finalizarVenda() {
+    if (atendimentoAtual?.tipo === "comanda") {
+      await enviarPedidoComanda();
+      return;
+    }
+
     if (carrinho.length === 0) {
       setMensagem("Adicione pelo menos um produto.");
       return;
@@ -538,6 +748,44 @@ export default function PdvPage() {
               ← Voltar ao menu
             </Link>
           </div>
+        </div>
+
+        <div className="mb-4 flex items-center gap-2 overflow-x-auto rounded-2xl border border-zinc-200 bg-white p-2 shadow-sm">
+          {atendimentos.map((atendimento) => (
+            <button
+              key={atendimento.chave}
+              type="button"
+              onClick={() => {
+                setAtendimentoAtivo(atendimento.chave);
+                setMensagem("");
+              }}
+              className={`whitespace-nowrap rounded-xl px-4 py-3 text-sm font-bold transition ${
+                atendimento.chave === atendimentoAtivo
+                  ? "bg-red-600 text-white shadow-sm"
+                  : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200"
+              }`}
+            >
+              {atendimento.tipo === "avulsa"
+                ? "Venda avulsa"
+                : `#${atendimento.numero} ${atendimento.clienteNome || "Cliente"} • ${
+                    atendimento.mesaNome || `Mesa ${atendimento.mesaNumero ?? "?"}`
+                  }`}
+            </button>
+          ))}
+
+          <button
+            type="button"
+            onClick={() => {
+              setClienteNovaComanda("");
+              setMesaNovaComanda("");
+              setModalNovaComanda(true);
+              setMensagem("");
+            }}
+            className="flex whitespace-nowrap items-center gap-2 rounded-xl border border-dashed border-red-300 bg-red-50 px-4 py-3 text-sm font-bold text-red-700 hover:bg-red-100"
+          >
+            <Plus className="h-4 w-4" />
+            Nova comanda
+          </button>
         </div>
 
         <div className="grid gap-4 lg:grid-cols-[1fr_390px]">
@@ -718,7 +966,17 @@ export default function PdvPage() {
           <aside className="rounded-2xl bg-white p-4 shadow-sm lg:sticky lg:top-4 lg:self-start">
         <div className="mb-4 flex items-center justify-between">
           <div>
-            <h2 className="text-xl font-bold">Pedido</h2>
+            <h2 className="text-xl font-bold">
+              {atendimentoAtual?.tipo === "comanda"
+                ? `Comanda #${atendimentoAtual.numero}`
+                : "Pedido"}
+            </h2>
+            {atendimentoAtual?.tipo === "comanda" && (
+              <p className="font-semibold text-red-600">
+                {atendimentoAtual.clienteNome || "Cliente"} •{" "}
+                {atendimentoAtual.mesaNome || `Mesa ${atendimentoAtual.mesaNumero ?? "?"}`}
+              </p>
+            )}
 
             <p className="text-sm text-zinc-500">
               {quantidadeTotal} item(ns)
@@ -837,6 +1095,8 @@ export default function PdvPage() {
             </strong>
           </div>
         </div>
+        {atendimentoAtual?.tipo === "avulsa" ? (
+          <>
 
         <div className="mb-4">
           <p className="mb-2 font-semibold">
@@ -889,7 +1149,13 @@ export default function PdvPage() {
           </div>
         </div>
 
-        <button
+        </>
+        ) : (
+          <div className="mb-4 rounded-xl border border-red-100 bg-red-50 p-3 text-sm text-red-800">
+            Os itens serão enviados para a comanda. O pagamento fica para o fechamento.
+          </div>
+        )}
+<button
           type="button"
           onClick={finalizarVenda}
           disabled={
@@ -913,6 +1179,76 @@ export default function PdvPage() {
       </aside>
     </div>
       </div>
+
+    {modalNovaComanda && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4">
+        <div className="w-full max-w-md rounded-3xl bg-white shadow-2xl">
+          <div className="flex items-center justify-between border-b border-zinc-200 p-5">
+            <div>
+              <p className="text-sm font-semibold text-red-600">Atendimento</p>
+              <h2 className="text-2xl font-bold">Nova comanda</h2>
+            </div>
+            <button
+              type="button"
+              onClick={() => setModalNovaComanda(false)}
+              className="rounded-xl p-2 text-zinc-500 hover:bg-zinc-100"
+              aria-label="Fechar"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+
+          <div className="space-y-4 p-5">
+            <div>
+              <label className="mb-2 block text-sm font-semibold">Nome do cliente</label>
+              <input
+                type="text"
+                value={clienteNovaComanda}
+                onChange={(event) => setClienteNovaComanda(event.target.value)}
+                placeholder="Ex.: João"
+                maxLength={80}
+                autoFocus
+                className="w-full rounded-xl border border-zinc-300 p-3 outline-none focus:border-red-500"
+              />
+            </div>
+
+            <div>
+              <label className="mb-2 block text-sm font-semibold">Mesa</label>
+              <select
+                value={mesaNovaComanda}
+                onChange={(event) => setMesaNovaComanda(event.target.value)}
+                className="w-full rounded-xl border border-zinc-300 bg-white p-3 outline-none focus:border-red-500"
+              >
+                <option value="">Selecione uma mesa</option>
+                {mesasDisponiveis.map((mesa) => (
+                  <option key={mesa.id} value={mesa.numero}>
+                    {mesa.nome || `Mesa ${mesa.numero}`}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 border-t border-zinc-200 bg-zinc-50 p-5">
+            <button
+              type="button"
+              onClick={() => setModalNovaComanda(false)}
+              className="rounded-xl border border-zinc-300 bg-white px-4 py-3 font-semibold"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={abrirNovaComanda}
+              disabled={abrindoComanda || !clienteNovaComanda.trim() || !mesaNovaComanda}
+              className="rounded-xl bg-red-600 px-4 py-3 font-bold text-white disabled:bg-zinc-300"
+            >
+              {abrindoComanda ? "Abrindo..." : "Abrir comanda"}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
 
     { modalAdicionalAberto && produtoSelecionado && (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4">
