@@ -350,7 +350,7 @@ export default function PdvPage() {
       <html lang="pt-BR">
         <head>
           <meta charset="utf-8" />
-          <title>Comanda #${dados.numeroComanda}</title>
+          <title>Venda #${dados.numeroVenda}</title>
           <style>
             @page { size: 80mm auto; margin: 4mm; }
             * { box-sizing: border-box; }
@@ -378,12 +378,12 @@ export default function PdvPage() {
         <body>
           <div class="centro">
             <h1>Silvas' Pizza Frita</h1>
-            <div class="subtitulo">COMPROVANTE DA COMANDA</div>
+            <div class="subtitulo">COMPROVANTE DE VENDA</div>
           </div>
 
           <div class="separador"></div>
 
-          <div><strong>Comanda:</strong> #${dados.numeroComanda}</div>
+          
           <div><strong>Cliente:</strong> ${dados.clienteNome}</div>
           <div><strong>Venda:</strong> #${dados.numeroVenda}</div>
           <div><strong>Data:</strong> ${dataHora}</div>
@@ -1136,7 +1136,7 @@ export default function PdvPage() {
                       ? "hover:bg-red-700"
                       : "text-zinc-500 hover:bg-zinc-300 hover:text-red-700"
                   } disabled:opacity-40`}
-                  title="Fechar comanda"
+                  title="Finalizar venda"
                   aria-label={`Fechar Comanda #${atendimento.numero}`}
                 >
                   <X className="h-4 w-4" />
@@ -1457,17 +1457,13 @@ export default function PdvPage() {
         <div className="my-5 border-t border-zinc-200 pt-5">
           <div className="flex items-end justify-between gap-3">
             <span className="font-medium text-zinc-500">
-              {atendimentoAtual?.tipo === "comanda" && carrinho.length > 0
-                ? "Itens a enviar"
-                : atendimentoAtual?.tipo === "comanda"
-                  ? "Total da comanda"
-                  : "Total"}
+              "Total"
             </span>
 
             <strong className="text-right text-4xl font-extrabold text-red-600">
               {moeda(
-                atendimentoAtual?.tipo === "comanda" && carrinho.length === 0
-                  ? totalComandaAtual
+                atendimentoAtual?.tipo === "comanda"
+                  ? totalComandaAtual + total
                   : total,
               )}
             </strong>
@@ -1531,12 +1527,6 @@ export default function PdvPage() {
           </div>
         )}
 
-        {atendimentoAtual?.tipo === "comanda" &&
-          (carrinho.length > 0 || totalComandaAtual > 0) && (
-            <div className="mb-4 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-600">
-              Ao finalizar, escolha a forma de pagamento e se deseja imprimir o comprovante.
-            </div>
-          )}
 <button
           type="button"
           onClick={finalizarVenda}
@@ -1575,7 +1565,7 @@ export default function PdvPage() {
                   Finalizar venda
                 </p>
                 <h2 className="text-xl font-extrabold">
-                  Comanda #{atendimentoAtual.numero}
+                  Venda #{atendimentoAtual.numero}
                 </h2>
                 <p className="mt-1 text-sm text-zinc-500">
                   {atendimentoAtual.clienteNome || "Cliente"}
