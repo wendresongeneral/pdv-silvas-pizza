@@ -3,7 +3,7 @@
 import { MouseEvent, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
-import { ClipboardList, Plus, QrCode, Star, X } from "lucide-react";
+import { ClipboardList, Plus, Printer, QrCode, Star, X } from "lucide-react";
 
 type Categoria = {
   id: string;
@@ -99,6 +99,7 @@ export default function PdvPage() {
   const [clienteNovaComanda, setClienteNovaComanda] = useState("");
   const [abrindoComanda, setAbrindoComanda] = useState(false);
   const [fechandoComandaId, setFechandoComandaId] = useState<string | null>(null);
+  const [modalFecharComanda, setModalFecharComanda] = useState(false);
 
   const atendimentoAtual =
     atendimentos.find((item) => item.chave === atendimentoAtivo) ??
@@ -294,7 +295,181 @@ export default function PdvPage() {
     }
   }
 
-  async function fecharComandaNoPdv() {
+  async function carregarItensParaImpressao(comandaId: string) {
+    const { data: pedidosData, error: pedidosError } = await supabase
+      .from("comanda_pedidos")
+      .select("id, status")
+      .eq("comanda_id", comandaId)
+      .neq("status", "Cancelado");
+
+    if (pedidosError) throw new Error(pedidosError.message);
+
+    const pedidoIds = (pedidosData ?? []).map((pedido) => pedido.id);
+
+    if (pedidoIds.length === 0) {
+      return [];
+    }
+
+    const { data: itensData, error: itensError } = await supabase
+      .from("comanda_itens")
+      .select("id, nome, quantidade, valor_unitario")
+      .in("pedido_id", pedidoIds);
+
+    if (itensError) throw new Error(itensError.message);
+
+    const idsItens = (itensData ?? []).map((item) => item.id);
+
+    let extrasData: {
+      item_id: string;
+      nome: string;
+      valor: number | string;
+    }[] = [];
+
+    if (idsItens.length > 0) {
+      const { data, error } = await supabase
+        .from("comanda_item_adicionais")
+        .select("item_id, nome, valor")
+        .in("item_id", idsItens);
+
+      if (error) throw new Error(error.message);
+
+      extrasData = data ?? [];
+    }
+
+    return (itensData ?? []).map((item) => ({
+      ...item,
+      extras: extrasData.filter((extra) => extra.item_id === item.id),
+    }));
+  }
+
+  function escreverComprovante(
+    janela: Window,
+    dados: {
+      numeroComanda: number;
+      clienteNome: string;
+      numeroVenda: string | number;
+      total: number;
+      formaPagamento: FormaPagamento;
+      itens: {
+        id: string;
+        nome: string;
+        quantidade: number;
+        valor_unitario: number | string;
+        extras: {
+          item_id: string;
+          nome: string;
+          valor: number | string;
+        }[];
+      }[];
+    },
+  ) {
+    const linhas = dados.itens
+      .map((item) => {
+        const subtotal =
+          Number(item.valor_unitario) * Number(item.quantidade);
+
+        const extras = item.extras
+          .map(
+            (extra) =>
+              `<div class="extra">+ ${extra.nome}</div>`,
+          )
+          .join("");
+
+        return `
+          <div class="item">
+            <div class="linha">
+              <span>${item.quantidade}x ${item.nome}</span>
+              <strong>${moeda(subtotal)}</strong>
+            </div>
+            ${extras}
+          </div>
+        `;
+      })
+      .join("");
+
+    const dataHora = new Date().toLocaleString("pt-BR", {
+      timeZone: "America/Sao_Paulo",
+    });
+
+    janela.document.open();
+    janela.document.write(`
+      <!doctype html>
+      <html lang="pt-BR">
+        <head>
+          <meta charset="utf-8" />
+          <title>Comanda #${dados.numeroComanda}</title>
+          <style>
+            @page { size: 80mm auto; margin: 4mm; }
+            * { box-sizing: border-box; }
+            body {
+              width: 72mm;
+              margin: 0 auto;
+              color: #000;
+              background: #fff;
+              font-family: Arial, Helvetica, sans-serif;
+              font-size: 12px;
+              line-height: 1.35;
+            }
+            .centro { text-align: center; }
+            h1 { margin: 0; font-size: 18px; }
+            .subtitulo { margin-top: 3px; font-size: 11px; }
+            .separador { margin: 10px 0; border-top: 1px dashed #000; }
+            .linha { display: flex; justify-content: space-between; gap: 10px; }
+            .item { margin: 7px 0; }
+            .extra { margin-left: 12px; font-size: 11px; }
+            .total { margin-top: 8px; font-size: 17px; font-weight: 700; }
+            .rodape { margin-top: 14px; text-align: center; font-size: 10px; }
+            @media print { body { width: auto; } }
+          </style>
+        </head>
+        <body>
+          <div class="centro">
+            <h1>Silvas' Pizza Frita</h1>
+            <div class="subtitulo">COMPROVANTE DA COMANDA</div>
+          </div>
+
+          <div class="separador"></div>
+
+          <div><strong>Comanda:</strong> #${dados.numeroComanda}</div>
+          <div><strong>Cliente:</strong> ${dados.clienteNome}</div>
+          <div><strong>Venda:</strong> #${dados.numeroVenda}</div>
+          <div><strong>Data:</strong> ${dataHora}</div>
+
+          <div class="separador"></div>
+
+          ${linhas || "<div>Nenhum item.</div>"}
+
+          <div class="separador"></div>
+
+          <div class="linha">
+            <span>Pagamento</span>
+            <strong>${dados.formaPagamento}</strong>
+          </div>
+
+          <div class="linha total">
+            <span>TOTAL</span>
+            <span>${moeda(dados.total)}</span>
+          </div>
+
+          <div class="separador"></div>
+
+          <div class="rodape">Obrigado pela preferência!</div>
+
+          <script>
+            window.onload = function () {
+              window.print();
+            };
+            window.onafterprint = function () {
+              window.close();
+            };
+          </script>
+        </body>
+      </html>
+    `);
+    janela.document.close();
+  }
+
+  async function fecharComandaNoPdv(imprimir = false) {
     if (
       atendimentoAtual?.tipo !== "comanda" ||
       !atendimentoAtual.comandaId
@@ -306,26 +481,45 @@ export default function PdvPage() {
       setMensagem(
         "Existem itens ainda não enviados. Envie o pedido para a comanda antes de fechar.",
       );
+      setModalFecharComanda(false);
       return;
     }
 
     if (totalComandaAtual <= 0) {
       setMensagem("A comanda ainda não possui consumo para fechar.");
+      setModalFecharComanda(false);
       return;
     }
 
-    const confirmar = window.confirm(
-      `Fechar a Comanda #${atendimentoAtual.numero} em ${formaPagamento}?\n\nTotal: ${moeda(
-        totalComandaAtual,
-      )}`,
-    );
+    let janelaImpressao: Window | null = null;
 
-    if (!confirmar) return;
+    if (imprimir) {
+      janelaImpressao = window.open(
+        "",
+        "_blank",
+        "width=420,height=720",
+      );
+
+      if (!janelaImpressao) {
+        alert(
+          "O navegador bloqueou a impressão. Permita pop-ups para este site.",
+        );
+        return;
+      }
+
+      janelaImpressao.document.write(
+        "<p style='font-family:Arial;padding:20px'>Preparando impressão...</p>",
+      );
+    }
 
     setFinalizando(true);
     setMensagem("");
 
     try {
+      const itensImpressao = imprimir
+        ? await carregarItensParaImpressao(atendimentoAtual.comandaId)
+        : [];
+
       const { data, error } = await supabase.rpc(
         "fechar_comanda",
         {
@@ -336,8 +530,25 @@ export default function PdvPage() {
 
       if (error) throw new Error(error.message);
 
-      const numero = atendimentoAtual.numero;
+      const numero = atendimentoAtual.numero ?? 0;
+      const clienteNome =
+        atendimentoAtual.clienteNome || "Cliente sem nome";
+      const totalFinal = Number(
+        data?.total ?? totalComandaAtual,
+      );
 
+      if (imprimir && janelaImpressao) {
+        escreverComprovante(janelaImpressao, {
+          numeroComanda: numero,
+          clienteNome,
+          numeroVenda: data?.numero_venda ?? "",
+          total: totalFinal,
+          formaPagamento,
+          itens: itensImpressao,
+        });
+      }
+
+      setModalFecharComanda(false);
       setAtendimentoAtivo("avulsa");
 
       await Promise.all([carregarDados(), carregarComandas()]);
@@ -345,11 +556,13 @@ export default function PdvPage() {
       setMensagem(
         `Comanda #${numero} fechada. Venda #${
           data?.numero_venda ?? ""
-        } registrada em ${moeda(
-          Number(data?.total ?? totalComandaAtual),
-        )}.`,
+        } registrada em ${moeda(totalFinal)}.`,
       );
     } catch (error) {
+      if (janelaImpressao && !janelaImpressao.closed) {
+        janelaImpressao.close();
+      }
+
       console.error("Erro ao fechar comanda pelo PDV:", error);
       setMensagem(
         error instanceof Error
@@ -359,6 +572,30 @@ export default function PdvPage() {
     } finally {
       setFinalizando(false);
     }
+  }
+
+  function abrirModalFechamento() {
+    if (
+      atendimentoAtual?.tipo !== "comanda" ||
+      !atendimentoAtual.comandaId
+    ) {
+      return;
+    }
+
+    if (carrinho.length > 0) {
+      setMensagem(
+        "Envie os itens para a comanda antes de fechar.",
+      );
+      return;
+    }
+
+    if (totalComandaAtual <= 0) {
+      setMensagem("A comanda ainda não possui consumo para fechar.");
+      return;
+    }
+
+    setMensagem("");
+    setModalFecharComanda(true);
   }
 
   async function fecharComandaPeloX(
@@ -795,7 +1032,7 @@ export default function PdvPage() {
       if (carrinho.length > 0) {
         await enviarPedidoComanda();
       } else {
-        await fecharComandaNoPdv();
+        abrirModalFechamento();
       }
       return;
     }
@@ -1274,8 +1511,7 @@ export default function PdvPage() {
             </div>
           )}
         </div>
-        {(atendimentoAtual?.tipo === "avulsa" ||
-          (atendimentoAtual?.tipo === "comanda" && carrinho.length === 0)) && (
+        {atendimentoAtual?.tipo === "avulsa" && (
           <div className="mb-4">
             <p className="mb-2 font-semibold">
               Forma de pagamento
@@ -1327,9 +1563,17 @@ export default function PdvPage() {
         {atendimentoAtual?.tipo === "comanda" && carrinho.length > 0 && (
           <div className="mb-4 rounded-xl border border-red-100 bg-red-50 p-3 text-sm text-red-800">
             Envie estes itens para a comanda. Depois, com o carrinho vazio,
-            o pagamento e o botão de fechamento aparecem aqui mesmo.
+            use o botão abaixo para fechar.
           </div>
         )}
+
+        {atendimentoAtual?.tipo === "comanda" &&
+          carrinho.length === 0 &&
+          totalComandaAtual > 0 && (
+            <div className="mb-4 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-600">
+              O pagamento e a opção de impressão aparecem ao fechar a comanda.
+            </div>
+          )}
 <button
           type="button"
           onClick={finalizarVenda}
@@ -1364,6 +1608,119 @@ export default function PdvPage() {
       </aside>
     </div>
       </div>
+
+    {modalFecharComanda &&
+      atendimentoAtual?.tipo === "comanda" && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/55 p-4">
+          <div className="w-full max-w-sm overflow-hidden rounded-3xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-zinc-200 p-5">
+              <div>
+                <p className="text-sm font-semibold text-red-600">
+                  Finalizar atendimento
+                </p>
+                <h2 className="text-xl font-extrabold">
+                  Comanda #{atendimentoAtual.numero}
+                </h2>
+                <p className="mt-1 text-sm text-zinc-500">
+                  {atendimentoAtual.clienteNome || "Cliente"}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setModalFecharComanda(false)}
+                disabled={finalizando}
+                className="rounded-xl p-2 text-zinc-500 hover:bg-zinc-100 disabled:opacity-50"
+                aria-label="Fechar"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="p-5">
+              <div className="mb-5 rounded-2xl bg-zinc-50 p-4 text-center">
+                <p className="text-sm font-medium text-zinc-500">
+                  Total da comanda
+                </p>
+                <p className="mt-1 text-4xl font-extrabold text-red-600">
+                  {moeda(totalComandaAtual)}
+                </p>
+              </div>
+
+              <p className="mb-2 text-sm font-bold text-zinc-700">
+                Forma de pagamento
+              </p>
+
+              <div className="grid grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setFormaPagamento("Dinheiro")}
+                  disabled={finalizando}
+                  className={`rounded-xl border px-2 py-3 text-sm font-semibold ${
+                    formaPagamento === "Dinheiro"
+                      ? "border-green-600 bg-green-50 text-green-700"
+                      : "border-zinc-200 bg-white"
+                  }`}
+                >
+                  💵 Dinheiro
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setFormaPagamento("Cartão")}
+                  disabled={finalizando}
+                  className={`rounded-xl border px-2 py-3 text-sm font-semibold ${
+                    formaPagamento === "Cartão"
+                      ? "border-blue-600 bg-blue-50 text-blue-700"
+                      : "border-zinc-200 bg-white"
+                  }`}
+                >
+                  💳 Cartão
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setFormaPagamento("Pix")}
+                  disabled={finalizando}
+                  className={`rounded-xl border px-2 py-3 text-sm font-semibold ${
+                    formaPagamento === "Pix"
+                      ? "border-teal-600 bg-teal-50 text-teal-700"
+                      : "border-zinc-200 bg-white"
+                  }`}
+                >
+                  <span className="flex items-center justify-center gap-1">
+                    <QrCode className="h-4 w-4" />
+                    Pix
+                  </span>
+                </button>
+              </div>
+
+              <div className="mt-5 grid gap-2">
+                <button
+                  type="button"
+                  onClick={() => fecharComandaNoPdv(true)}
+                  disabled={finalizando}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-red-600 px-4 py-3.5 font-bold text-white transition hover:bg-red-700 disabled:opacity-50"
+                >
+                  <Printer className="h-5 w-5" />
+                  {finalizando
+                    ? "Finalizando..."
+                    : "Fechar e imprimir"}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => fecharComandaNoPdv(false)}
+                  disabled={finalizando}
+                  className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 font-semibold text-zinc-700 transition hover:bg-zinc-50 disabled:opacity-50"
+                >
+                  Fechar sem imprimir
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
     {modalNovaComanda && (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4">
