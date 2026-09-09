@@ -248,53 +248,6 @@ export default function PdvPage() {
     );
   }
 
-  async function enviarPedidoComanda() {
-    if (
-      atendimentoAtual?.tipo !== "comanda" ||
-      !atendimentoAtual.comandaId
-    ) {
-      return;
-    }
-
-    if (carrinho.length === 0) {
-      setMensagem("Adicione pelo menos um produto.");
-      return;
-    }
-
-    setFinalizando(true);
-    setMensagem("");
-
-    try {
-      const { error } = await supabase.rpc("enviar_pedido_comanda", {
-        p_comanda_id: atendimentoAtual.comandaId,
-        p_itens: carrinho.map((item) => ({
-          produto_id: item.produtoId,
-          quantidade: item.quantidade,
-          adicionais: item.adicionais.map((adicional) => adicional.id),
-        })),
-        p_observacao: null,
-      });
-
-      if (error) throw new Error(error.message);
-
-      setCarrinho([]);
-      setMensagem(
-        `Pedido enviado para a Comanda #${atendimentoAtual.numero ?? ""}.`,
-      );
-
-      await Promise.all([carregarDados(), carregarComandas()]);
-    } catch (error) {
-      console.error("Erro ao enviar pedido para a comanda:", error);
-      setMensagem(
-        error instanceof Error
-          ? error.message
-          : "Não foi possível enviar o pedido.",
-      );
-    } finally {
-      setFinalizando(false);
-    }
-  }
-
   async function carregarItensParaImpressao(comandaId: string) {
     const { data: pedidosData, error: pedidosError } = await supabase
       .from("comanda_pedidos")
@@ -477,16 +430,8 @@ export default function PdvPage() {
       return;
     }
 
-    if (carrinho.length > 0) {
-      setMensagem(
-        "Existem itens ainda não enviados. Envie o pedido para a comanda antes de fechar.",
-      );
-      setModalFecharComanda(false);
-      return;
-    }
-
-    if (totalComandaAtual <= 0) {
-      setMensagem("A comanda ainda não possui consumo para fechar.");
+    if (carrinho.length === 0 && totalComandaAtual <= 0) {
+      setMensagem("Adicione pelo menos um produto.");
       setModalFecharComanda(false);
       return;
     }
@@ -516,8 +461,40 @@ export default function PdvPage() {
     setMensagem("");
 
     try {
+      /*
+       * Se houver produtos no carrinho, eles são enviados para a comanda
+       * automaticamente. Para o atendente isso é uma única ação:
+       * FINALIZAR VENDA.
+       */
+      if (carrinho.length > 0) {
+        const { error: pedidoError } = await supabase.rpc(
+          "enviar_pedido_comanda",
+          {
+            p_comanda_id: atendimentoAtual.comandaId,
+            p_itens: carrinho.map((item) => ({
+              produto_id: item.produtoId,
+              quantidade: item.quantidade,
+              adicionais: item.adicionais.map(
+                (adicional) => adicional.id,
+              ),
+            })),
+            p_observacao: null,
+          },
+        );
+
+        if (pedidoError) {
+          throw new Error(pedidoError.message);
+        }
+      }
+
+      /*
+       * Depois de gravar os itens, buscamos os dados definitivos para o
+       * comprovante. Assim impressão e venda usam exatamente o mesmo pedido.
+       */
       const itensImpressao = imprimir
-        ? await carregarItensParaImpressao(atendimentoAtual.comandaId)
+        ? await carregarItensParaImpressao(
+            atendimentoAtual.comandaId,
+          )
         : [];
 
       const { data, error } = await supabase.rpc(
@@ -534,7 +511,7 @@ export default function PdvPage() {
       const clienteNome =
         atendimentoAtual.clienteNome || "Cliente sem nome";
       const totalFinal = Number(
-        data?.total ?? totalComandaAtual,
+        data?.total ?? totalComandaAtual + total,
       );
 
       if (imprimir && janelaImpressao) {
@@ -548,26 +525,31 @@ export default function PdvPage() {
         });
       }
 
+      setCarrinho([]);
       setModalFecharComanda(false);
       setAtendimentoAtivo("avulsa");
 
-      await Promise.all([carregarDados(), carregarComandas()]);
+      await Promise.all([
+        carregarDados(),
+        carregarComandas(),
+      ]);
 
       setMensagem(
-        `Comanda #${numero} fechada. Venda #${
-          data?.numero_venda ?? ""
-        } registrada em ${moeda(totalFinal)}.`,
+        `Venda #${data?.numero_venda ?? ""} finalizada em ${moeda(
+          totalFinal,
+        )}.`,
       );
     } catch (error) {
       if (janelaImpressao && !janelaImpressao.closed) {
         janelaImpressao.close();
       }
 
-      console.error("Erro ao fechar comanda pelo PDV:", error);
+      console.error("Erro ao finalizar venda da comanda:", error);
+
       setMensagem(
         error instanceof Error
           ? error.message
-          : "Não foi possível fechar a comanda.",
+          : "Não foi possível finalizar a venda.",
       );
     } finally {
       setFinalizando(false);
@@ -582,15 +564,8 @@ export default function PdvPage() {
       return;
     }
 
-    if (carrinho.length > 0) {
-      setMensagem(
-        "Envie os itens para a comanda antes de fechar.",
-      );
-      return;
-    }
-
-    if (totalComandaAtual <= 0) {
-      setMensagem("A comanda ainda não possui consumo para fechar.");
+    if (carrinho.length === 0 && totalComandaAtual <= 0) {
+      setMensagem("Adicione pelo menos um produto.");
       return;
     }
 
@@ -1029,11 +1004,7 @@ export default function PdvPage() {
 
   async function finalizarVenda() {
     if (atendimentoAtual?.tipo === "comanda") {
-      if (carrinho.length > 0) {
-        await enviarPedidoComanda();
-      } else {
-        abrirModalFechamento();
-      }
+      abrirModalFechamento();
       return;
     }
 
@@ -1507,7 +1478,7 @@ export default function PdvPage() {
               <span className="font-medium text-zinc-500">
                 Já lançado na comanda
               </span>
-              <strong>{moeda(totalComandaAtual)}</strong>
+              <strong>{moeda(totalComandaAtual + total)}</strong>
             </div>
           )}
         </div>
@@ -1560,18 +1531,10 @@ export default function PdvPage() {
           </div>
         )}
 
-        {atendimentoAtual?.tipo === "comanda" && carrinho.length > 0 && (
-          <div className="mb-4 rounded-xl border border-red-100 bg-red-50 p-3 text-sm text-red-800">
-            Envie estes itens para a comanda. Depois, com o carrinho vazio,
-            use o botão abaixo para fechar.
-          </div>
-        )}
-
         {atendimentoAtual?.tipo === "comanda" &&
-          carrinho.length === 0 &&
-          totalComandaAtual > 0 && (
+          (carrinho.length > 0 || totalComandaAtual > 0) && (
             <div className="mb-4 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-600">
-              O pagamento e a opção de impressão aparecem ao fechar a comanda.
+              Ao finalizar, escolha a forma de pagamento e se deseja imprimir o comprovante.
             </div>
           )}
 <button
@@ -1579,22 +1542,15 @@ export default function PdvPage() {
           onClick={finalizarVenda}
           disabled={
             finalizando ||
-            (atendimentoAtual?.tipo === "avulsa" && carrinho.length === 0) ||
+            (atendimentoAtual?.tipo === "avulsa" &&
+              carrinho.length === 0) ||
             (atendimentoAtual?.tipo === "comanda" &&
               carrinho.length === 0 &&
               totalComandaAtual <= 0)
           }
           className="w-full rounded-2xl bg-gradient-to-r from-red-600 to-red-700 px-4 py-5 text-xl font-bold text-white shadow-lg transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:from-zinc-300 disabled:to-zinc-300"
         >
-          {finalizando
-            ? atendimentoAtual?.tipo === "comanda" && carrinho.length === 0
-              ? "Fechando comanda..."
-              : "Finalizando..."
-            : atendimentoAtual?.tipo === "comanda"
-              ? carrinho.length > 0
-                ? "Enviar para comanda"
-                : "Fechar comanda"
-              : "Finalizar venda"}
+          {finalizando ? "Finalizando..." : "Finalizar venda"}
         </button>
 
         {mensagem && (
@@ -1616,7 +1572,7 @@ export default function PdvPage() {
             <div className="flex items-center justify-between border-b border-zinc-200 p-5">
               <div>
                 <p className="text-sm font-semibold text-red-600">
-                  Finalizar atendimento
+                  Finalizar venda
                 </p>
                 <h2 className="text-xl font-extrabold">
                   Comanda #{atendimentoAtual.numero}
@@ -1640,7 +1596,7 @@ export default function PdvPage() {
             <div className="p-5">
               <div className="mb-5 rounded-2xl bg-zinc-50 p-4 text-center">
                 <p className="text-sm font-medium text-zinc-500">
-                  Total da comanda
+                  Total da venda
                 </p>
                 <p className="mt-1 text-4xl font-extrabold text-red-600">
                   {moeda(totalComandaAtual)}
@@ -1705,7 +1661,7 @@ export default function PdvPage() {
                   <Printer className="h-5 w-5" />
                   {finalizando
                     ? "Finalizando..."
-                    : "Fechar e imprimir"}
+                    : "Finalizar e imprimir"}
                 </button>
 
                 <button
@@ -1714,7 +1670,7 @@ export default function PdvPage() {
                   disabled={finalizando}
                   className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 font-semibold text-zinc-700 transition hover:bg-zinc-50 disabled:opacity-50"
                 >
-                  Fechar sem imprimir
+                  Finalizar sem imprimir
                 </button>
               </div>
             </div>
