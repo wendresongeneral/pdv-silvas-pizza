@@ -322,11 +322,12 @@ export default function PdvPage() {
     setMensagem("");
 
     try {
-      const { error } = await supabase
-        .from("comandas")
-        .update({ status: "Fechada" })
-        .eq("id", atendimento.comandaId)
-        .eq("status", "Aberta");
+      const { error } = await supabase.rpc(
+        "fechar_comanda_vazia",
+        {
+          p_comanda_id: atendimento.comandaId,
+        },
+      );
 
       if (error) throw new Error(error.message);
 
