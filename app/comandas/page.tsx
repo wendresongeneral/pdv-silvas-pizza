@@ -8,6 +8,7 @@ import {
   Clock3,
   CreditCard,
   House,
+  Plus,
   QrCode,
   RefreshCw,
   ReceiptText,
@@ -24,7 +25,9 @@ type Mesa = {
 
 type Comanda = {
   id: string;
-  mesa_id: string;
+  numero: number;
+  mesa_id: string | null;
+  cliente_nome: string | null;
   total: number | string;
   status: string;
 };
@@ -69,6 +72,8 @@ export default function ComandasPage() {
   const [carregando, setCarregando] = useState(true);
   const [alterando, setAlterando] = useState<string | null>(null);
   const [fechando, setFechando] = useState<string | null>(null);
+  const [abrindoComanda, setAbrindoComanda] = useState(false);
+  const [clienteNome, setClienteNome] = useState("");
   const [excluindoPedido, setExcluindoPedido] = useState<string | null>(null);
 
   async function carregar() {
@@ -87,7 +92,7 @@ export default function ComandasPage() {
 
       supabase
         .from("comandas")
-        .select("id, mesa_id, total, status")
+        .select("id, numero, mesa_id, cliente_nome, total, status")
         .eq("status", "Aberta")
         .order("aberta_em"),
 
@@ -222,15 +227,46 @@ export default function ComandasPage() {
         };
       })
       .sort(
-        (a, b) =>
-          (a.mesa?.numero ?? 999) -
-          (b.mesa?.numero ?? 999),
+        (a, b) => a.comanda.numero - b.comanda.numero,
       );
   }, [comandas, mesas, pedidos]);
 
   const novos = pedidos.filter(
     (p) => p.status === "Novo",
   ).length;
+
+  async function abrirNovaComanda() {
+    const nome = clienteNome.trim();
+
+    if (!nome) {
+      alert("Informe o nome do cliente.");
+      return;
+    }
+
+    setAbrindoComanda(true);
+
+    const { data, error } = await supabase.rpc(
+      "abrir_comanda",
+      {
+        p_cliente_nome: nome,
+      },
+    );
+
+    setAbrindoComanda(false);
+
+    if (error) {
+      alert(error.message);
+      return;
+    }
+
+    setClienteNome("");
+
+    alert(
+      `Comanda #${data?.numero} aberta para ${data?.cliente_nome}.`,
+    );
+
+    await carregar();
+  }
 
   async function mudarStatus(
     pedidoId: string,
@@ -336,7 +372,7 @@ export default function ComandasPage() {
             <h1 className="text-3xl font-bold">Comandas</h1>
 
             <p className="mt-1 text-sm text-zinc-500">
-              Pedidos enviados pelas mesas em tempo real.
+              Acompanhe comandas e pedidos em tempo real.
             </p>
           </div>
 
@@ -364,6 +400,51 @@ export default function ComandasPage() {
           </div>
         </header>
 
+        <section className="mb-6 rounded-3xl border border-zinc-200 bg-white p-5 shadow-sm">
+          <div className="mb-4 flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-red-50 text-red-600">
+              <Plus className="h-5 w-5" />
+            </div>
+            <div>
+              <h2 className="text-lg font-bold">Nova comanda</h2>
+              <p className="text-sm text-zinc-500">
+                Abra uma nova comanda para o cliente.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
+            <label className="block">
+              <span className="mb-1.5 block text-sm font-semibold text-zinc-700">
+                Nome do cliente
+              </span>
+              <input
+                type="text"
+                value={clienteNome}
+                onChange={(event) => setClienteNome(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !abrindoComanda) {
+                    abrirNovaComanda();
+                  }
+                }}
+                maxLength={80}
+                placeholder="Ex.: João"
+                className="h-11 w-full rounded-xl border border-zinc-300 bg-white px-3 outline-none transition focus:border-red-500 focus:ring-2 focus:ring-red-100"
+              />
+            </label>
+
+            <button
+              type="button"
+              onClick={abrirNovaComanda}
+              disabled={abrindoComanda}
+              className="flex h-11 items-center justify-center gap-2 rounded-xl bg-red-600 px-5 font-bold text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Plus className="h-4 w-4" />
+              {abrindoComanda ? "Abrindo..." : "Abrir comanda"}
+            </button>
+          </div>
+        </section>
+
         {novos > 0 && (
           <div className="mb-6 flex items-center gap-3 rounded-2xl border border-red-200 bg-red-50 p-4 text-red-800">
             <Clock3 className="h-6 w-6" />
@@ -372,7 +453,7 @@ export default function ComandasPage() {
                 {novos} novo(s) pedido(s)
               </p>
               <p className="text-sm">
-                Confira as mesas abaixo.
+                Confira as comandas abaixo.
               </p>
             </div>
           </div>
@@ -389,7 +470,7 @@ export default function ComandasPage() {
               Nenhuma comanda aberta
             </p>
             <p className="mt-1 text-sm text-zinc-500">
-              Quando uma mesa enviar um pedido, ele aparecerá aqui.
+              Quando uma comanda for aberta, ela aparecerá aqui.
             </p>
           </div>
         ) : (
@@ -410,12 +491,16 @@ export default function ComandasPage() {
                     <div className="flex items-center justify-between border-b border-zinc-200 p-5">
                       <div>
                         <p className="text-sm font-semibold text-red-600">
-                          Comanda aberta
+                          Comanda #{comanda.numero}
                         </p>
                         <h2 className="text-2xl font-extrabold">
-                          {mesa?.nome ||
-                            `Mesa ${mesa?.numero ?? "?"}`}
+                          {comanda.cliente_nome || "Cliente sem nome"}
                         </h2>
+                        {mesa && (
+                          <p className="mt-0.5 text-sm font-medium text-zinc-500">
+                            {mesa.nome || `Mesa ${mesa.numero}`}
+                          </p>
+                        )}
                       </div>
 
                       <div className="text-right">
@@ -429,6 +514,17 @@ export default function ComandasPage() {
                     </div>
 
                     <div className="max-h-[560px] space-y-3 overflow-y-auto p-4">
+                      {pedidosMesa.length === 0 && (
+                        <div className="rounded-2xl border border-dashed border-zinc-300 bg-zinc-50 p-6 text-center">
+                          <p className="font-semibold text-zinc-700">
+                            Nenhum pedido nesta comanda ainda.
+                          </p>
+                          <p className="mt-1 text-sm text-zinc-500">
+                            A comanda está aberta e pronta para receber pedidos.
+                          </p>
+                        </div>
+                      )}
+
                       {pedidosMesa.map((pedido) => {
                         const itensPedido = itens.filter(
                           (item) =>
