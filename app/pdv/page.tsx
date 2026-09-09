@@ -1002,21 +1002,50 @@ export default function PdvPage() {
     Number(produtoSelecionado?.preco ?? 0) +
     totalAdicionaisModal;
 
-  async function finalizarVenda() {
-    if (atendimentoAtual?.tipo === "comanda") {
-      abrirModalFechamento();
+  async function finalizarVendaAvulsa(imprimir = false) {
+    if (carrinho.length === 0) {
+      setMensagem("Adicione pelo menos um produto.");
+      setModalFecharComanda(false);
       return;
     }
 
-    if (carrinho.length === 0) {
-      setMensagem("Adicione pelo menos um produto.");
-      return;
+    let janelaImpressao: Window | null = null;
+
+    if (imprimir) {
+      janelaImpressao = window.open(
+        "",
+        "_blank",
+        "width=420,height=720",
+      );
+
+      if (!janelaImpressao) {
+        alert(
+          "O navegador bloqueou a impressão. Permita pop-ups para este site.",
+        );
+        return;
+      }
+
+      janelaImpressao.document.write(
+        "<p style='font-family:Arial;padding:20px'>Preparando impressão...</p>",
+      );
     }
 
     setFinalizando(true);
     setMensagem("");
 
     try {
+      const itensImpressao = carrinho.map((item, index) => ({
+        id: `${item.produtoId}-${index}`,
+        nome: item.nome,
+        quantidade: item.quantidade,
+        valor_unitario: item.precoUnitario,
+        extras: item.adicionais.map((adicional) => ({
+          item_id: `${item.produtoId}-${index}`,
+          nome: adicional.nome,
+          valor: adicional.preco,
+        })),
+      }));
+
       const { data, error } = await supabase.rpc(
         "registrar_venda_pdv",
         {
@@ -1024,23 +1053,45 @@ export default function PdvPage() {
           p_itens: carrinho.map((item) => ({
             produto_id: item.produtoId,
             quantidade: item.quantidade,
-            adicionais: item.adicionais.map((adicional) => adicional.id),
+            adicionais: item.adicionais.map(
+              (adicional) => adicional.id,
+            ),
           })),
         },
       );
 
       if (error) throw new Error(error.message);
 
+      const totalFinal = Number(data?.total ?? total);
+
+      if (imprimir && janelaImpressao) {
+        escreverComprovante(janelaImpressao, {
+          numeroComanda: 0,
+          clienteNome: "Venda avulsa",
+          numeroVenda: data?.numero_venda ?? "",
+          total: totalFinal,
+          formaPagamento,
+          itens: itensImpressao,
+        });
+      }
+
       setCarrinho([]);
+      setModalFecharComanda(false);
+
       setMensagem(
         `Venda #${data?.numero_venda ?? ""} de ${moeda(
-          Number(data?.total ?? total),
+          totalFinal,
         )} finalizada com sucesso.`,
       );
 
       await carregarDados();
     } catch (error) {
-      console.error("Erro ao finalizar venda:", error);
+      if (janelaImpressao && !janelaImpressao.closed) {
+        janelaImpressao.close();
+      }
+
+      console.error("Erro ao finalizar venda avulsa:", error);
+
       setMensagem(
         error instanceof Error
           ? error.message
@@ -1049,6 +1100,25 @@ export default function PdvPage() {
     } finally {
       setFinalizando(false);
     }
+  }
+
+  async function finalizarVenda() {
+    if (carrinho.length === 0 && atendimentoAtual?.tipo === "avulsa") {
+      setMensagem("Adicione pelo menos um produto.");
+      return;
+    }
+
+    if (
+      atendimentoAtual?.tipo === "comanda" &&
+      carrinho.length === 0 &&
+      totalComandaAtual <= 0
+    ) {
+      setMensagem("Adicione pelo menos um produto.");
+      return;
+    }
+
+    setMensagem("");
+    setModalFecharComanda(true);
   }
 
   return (
@@ -1547,8 +1617,7 @@ export default function PdvPage() {
     </div>
       </div>
 
-    {modalFecharComanda &&
-      atendimentoAtual?.tipo === "comanda" && (
+    {modalFecharComanda && atendimentoAtual && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/55 p-4">
           <div className="w-full max-w-sm overflow-hidden rounded-3xl bg-white shadow-2xl">
             <div className="flex items-center justify-between border-b border-zinc-200 p-5">
@@ -1557,10 +1626,14 @@ export default function PdvPage() {
                   Finalizar venda
                 </p>
                 <h2 className="text-xl font-extrabold">
-                  Venda #{atendimentoAtual.numero}
+                  {atendimentoAtual.tipo === "comanda"
+                    ? `Venda #${atendimentoAtual.numero}`
+                    : "Venda avulsa"}
                 </h2>
                 <p className="mt-1 text-sm text-zinc-500">
-                  {atendimentoAtual.clienteNome || "Cliente"}
+                  {atendimentoAtual.tipo === "comanda"
+                    ? atendimentoAtual.clienteNome || "Cliente"
+                    : "Fechamento direto no PDV"}
                 </p>
               </div>
 
@@ -1581,7 +1654,11 @@ export default function PdvPage() {
                   Total da venda
                 </p>
                 <p className="mt-1 text-4xl font-extrabold text-red-600">
-                  {moeda(totalComandaAtual + total)}
+                  {moeda(
+                    atendimentoAtual.tipo === "comanda"
+                      ? totalComandaAtual + total
+                      : total,
+                  )}
                 </p>
               </div>
 
@@ -1636,7 +1713,11 @@ export default function PdvPage() {
               <div className="mt-5 grid gap-2">
                 <button
                   type="button"
-                  onClick={() => fecharComandaNoPdv(true)}
+                  onClick={() =>
+                    atendimentoAtual.tipo === "comanda"
+                      ? fecharComandaNoPdv(true)
+                      : finalizarVendaAvulsa(true)
+                  }
                   disabled={finalizando}
                   className="flex w-full items-center justify-center gap-2 rounded-xl bg-red-600 px-4 py-3.5 font-bold text-white transition hover:bg-red-700 disabled:opacity-50"
                 >
@@ -1648,7 +1729,11 @@ export default function PdvPage() {
 
                 <button
                   type="button"
-                  onClick={() => fecharComandaNoPdv(false)}
+                  onClick={() =>
+                    atendimentoAtual.tipo === "comanda"
+                      ? fecharComandaNoPdv(false)
+                      : finalizarVendaAvulsa(false)
+                  }
                   disabled={finalizando}
                   className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 font-semibold text-zinc-700 transition hover:bg-zinc-50 disabled:opacity-50"
                 >
