@@ -53,7 +53,7 @@ type FormaPagamento = "Dinheiro" | "Cartão" | "Pix";
 type ComandaAberta = {
   id: string;
   numero: number;
-  mesa_id: string;
+  mesa_id: string | null;
   cliente_nome: string | null;
   total: number | string;
   status: string;
@@ -105,6 +105,15 @@ export default function PdvPage() {
     atendimentos[0];
 
   const carrinho = atendimentoAtual?.carrinho ?? [];
+
+  const comandaAtual =
+    atendimentoAtual?.tipo === "comanda" && atendimentoAtual.comandaId
+      ? comandasAbertas.find(
+          (comanda) => comanda.id === atendimentoAtual.comandaId,
+        )
+      : undefined;
+
+  const totalComandaAtual = Number(comandaAtual?.total ?? 0);
 
   function setCarrinho(
     atualizador:
@@ -279,6 +288,73 @@ export default function PdvPage() {
         error instanceof Error
           ? error.message
           : "Não foi possível enviar o pedido.",
+      );
+    } finally {
+      setFinalizando(false);
+    }
+  }
+
+  async function fecharComandaNoPdv() {
+    if (
+      atendimentoAtual?.tipo !== "comanda" ||
+      !atendimentoAtual.comandaId
+    ) {
+      return;
+    }
+
+    if (carrinho.length > 0) {
+      setMensagem(
+        "Existem itens ainda não enviados. Envie o pedido para a comanda antes de fechar.",
+      );
+      return;
+    }
+
+    if (totalComandaAtual <= 0) {
+      setMensagem("A comanda ainda não possui consumo para fechar.");
+      return;
+    }
+
+    const confirmar = window.confirm(
+      `Fechar a Comanda #${atendimentoAtual.numero} em ${formaPagamento}?\n\nTotal: ${moeda(
+        totalComandaAtual,
+      )}`,
+    );
+
+    if (!confirmar) return;
+
+    setFinalizando(true);
+    setMensagem("");
+
+    try {
+      const { data, error } = await supabase.rpc(
+        "fechar_comanda",
+        {
+          p_comanda_id: atendimentoAtual.comandaId,
+          p_forma_pagamento: formaPagamento,
+        },
+      );
+
+      if (error) throw new Error(error.message);
+
+      const numero = atendimentoAtual.numero;
+
+      setAtendimentoAtivo("avulsa");
+
+      await Promise.all([carregarDados(), carregarComandas()]);
+
+      setMensagem(
+        `Comanda #${numero} fechada. Venda #${
+          data?.numero_venda ?? ""
+        } registrada em ${moeda(
+          Number(data?.total ?? totalComandaAtual),
+        )}.`,
+      );
+    } catch (error) {
+      console.error("Erro ao fechar comanda pelo PDV:", error);
+      setMensagem(
+        error instanceof Error
+          ? error.message
+          : "Não foi possível fechar a comanda.",
       );
     } finally {
       setFinalizando(false);
@@ -716,7 +792,11 @@ export default function PdvPage() {
 
   async function finalizarVenda() {
     if (atendimentoAtual?.tipo === "comanda") {
-      await enviarPedidoComanda();
+      if (carrinho.length > 0) {
+        await enviarPedidoComanda();
+      } else {
+        await fecharComandaNoPdv();
+      }
       return;
     }
 
@@ -1169,85 +1249,108 @@ export default function PdvPage() {
         <div className="my-5 border-t border-zinc-200 pt-5">
           <div className="flex items-end justify-between gap-3">
             <span className="font-medium text-zinc-500">
-              Total
+              {atendimentoAtual?.tipo === "comanda" && carrinho.length > 0
+                ? "Itens a enviar"
+                : atendimentoAtual?.tipo === "comanda"
+                  ? "Total da comanda"
+                  : "Total"}
             </span>
 
             <strong className="text-right text-4xl font-extrabold text-red-600">
-              {moeda(total)}
+              {moeda(
+                atendimentoAtual?.tipo === "comanda" && carrinho.length === 0
+                  ? totalComandaAtual
+                  : total,
+              )}
             </strong>
           </div>
-        </div>
-        {atendimentoAtual?.tipo === "avulsa" ? (
-          <>
 
-        <div className="mb-4">
-          <p className="mb-2 font-semibold">
-            Forma de pagamento
-          </p>
-
-          <div className="grid grid-cols-3 gap-2">
-            <button
-              type="button"
-              onClick={() =>
-                setFormaPagamento("Dinheiro")
-              }
-              className={`rounded-xl border p-3 font-semibold ${formaPagamento === "Dinheiro"
-                ? "border-green-600 bg-green-50 text-green-700"
-                : "border-zinc-200"
-                }`}
-            >
-              💵 Dinheiro
-            </button>
-
-            <button
-              type="button"
-              onClick={() =>
-                setFormaPagamento("Cartão")
-              }
-              className={`rounded-xl border p-3 font-semibold ${formaPagamento === "Cartão"
-                ? "border-blue-600 bg-blue-50 text-blue-700"
-                : "border-zinc-200"
-                }`}
-            >
-              💳 Cartão
-            </button>
-            <button
-              type="button"
-              onClick={() =>
-                setFormaPagamento("Pix")
-              }
-              className={`rounded-xl border p-3 font-semibold ${
-                formaPagamento === "Pix"
-                  ? "border-teal-600 bg-teal-50 text-teal-700"
-                  : "border-zinc-200"
-              }`}
-            >
-              <span className="flex items-center justify-center gap-2">
-                <QrCode className="h-4 w-4" />
-                Pix
+          {atendimentoAtual?.tipo === "comanda" && carrinho.length > 0 && (
+            <div className="mt-3 flex items-center justify-between rounded-xl bg-zinc-50 px-3 py-2 text-sm">
+              <span className="font-medium text-zinc-500">
+                Já lançado na comanda
               </span>
-            </button>
-
-          </div>
+              <strong>{moeda(totalComandaAtual)}</strong>
+            </div>
+          )}
         </div>
+        {(atendimentoAtual?.tipo === "avulsa" ||
+          (atendimentoAtual?.tipo === "comanda" && carrinho.length === 0)) && (
+          <div className="mb-4">
+            <p className="mb-2 font-semibold">
+              Forma de pagamento
+            </p>
 
-        </>
-        ) : (
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={() => setFormaPagamento("Dinheiro")}
+                className={`rounded-xl border p-3 font-semibold ${
+                  formaPagamento === "Dinheiro"
+                    ? "border-green-600 bg-green-50 text-green-700"
+                    : "border-zinc-200"
+                }`}
+              >
+                💵 Dinheiro
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setFormaPagamento("Cartão")}
+                className={`rounded-xl border p-3 font-semibold ${
+                  formaPagamento === "Cartão"
+                    ? "border-blue-600 bg-blue-50 text-blue-700"
+                    : "border-zinc-200"
+                }`}
+              >
+                💳 Cartão
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setFormaPagamento("Pix")}
+                className={`rounded-xl border p-3 font-semibold ${
+                  formaPagamento === "Pix"
+                    ? "border-teal-600 bg-teal-50 text-teal-700"
+                    : "border-zinc-200"
+                }`}
+              >
+                <span className="flex items-center justify-center gap-2">
+                  <QrCode className="h-4 w-4" />
+                  Pix
+                </span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {atendimentoAtual?.tipo === "comanda" && carrinho.length > 0 && (
           <div className="mb-4 rounded-xl border border-red-100 bg-red-50 p-3 text-sm text-red-800">
-            Os itens serão enviados para a comanda. O pagamento fica para o fechamento.
+            Envie estes itens para a comanda. Depois, com o carrinho vazio,
+            o pagamento e o botão de fechamento aparecem aqui mesmo.
           </div>
         )}
 <button
           type="button"
           onClick={finalizarVenda}
           disabled={
-            finalizando || carrinho.length === 0
+            finalizando ||
+            (atendimentoAtual?.tipo === "avulsa" && carrinho.length === 0) ||
+            (atendimentoAtual?.tipo === "comanda" &&
+              carrinho.length === 0 &&
+              totalComandaAtual <= 0)
           }
           className="w-full rounded-2xl bg-gradient-to-r from-red-600 to-red-700 px-4 py-5 text-xl font-bold text-white shadow-lg transition hover:scale-[1.01] disabled:cursor-not-allowed disabled:from-zinc-300 disabled:to-zinc-300"
         >
           {finalizando
-            ? "Finalizando..."
-            : "Finalizar venda"}
+            ? atendimentoAtual?.tipo === "comanda" && carrinho.length === 0
+              ? "Fechando comanda..."
+              : "Finalizando..."
+            : atendimentoAtual?.tipo === "comanda"
+              ? carrinho.length > 0
+                ? "Enviar para comanda"
+                : "Fechar comanda"
+              : "Finalizar venda"}
         </button>
 
         {mensagem && (
