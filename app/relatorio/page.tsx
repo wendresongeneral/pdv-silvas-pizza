@@ -110,6 +110,7 @@ export default function RelatorioPage() {
     useState<"Dinheiro" | "Cartão" | "Pix">("Dinheiro");
   const [buscaProdutoEdicao, setBuscaProdutoEdicao] = useState("");
   const [salvandoEdicao, setSalvandoEdicao] = useState(false);
+  const [excluindoVenda, setExcluindoVenda] = useState<string | null>(null);
 
   function aplicarPeriodo(periodo: PeriodoRapido) {
     setPeriodoRapido(periodo);
@@ -203,6 +204,41 @@ export default function RelatorioPage() {
     } finally {
       setCarregando(false);
     }
+  }
+
+  async function excluirVenda(venda: Venda) {
+    const confirmar = window.confirm(
+      `Apagar definitivamente a Venda #${venda.numero}?\n\n` +
+        `Total: ${moeda(Number(venda.total))}\n\n` +
+        "Os itens serão removidos e o estoque controlado será devolvido.",
+    );
+
+    if (!confirmar) return;
+
+    setExcluindoVenda(venda.id);
+
+    const { error } = await supabase.rpc(
+      "excluir_venda_pdv",
+      {
+        p_venda_id: venda.id,
+      },
+    );
+
+    setExcluindoVenda(null);
+
+    if (error) {
+      alert(error.message);
+      return;
+    }
+
+    if (vendaEditando?.id === venda.id) {
+      setVendaEditando(null);
+      setItensEdicao([]);
+    }
+
+    await carregarRelatorio();
+
+    alert(`Venda #${venda.numero} apagada.`);
   }
 
   function abrirEdicaoVenda(venda: Venda) {
@@ -743,14 +779,29 @@ export default function RelatorioPage() {
                         </td>
 
                         <td className="p-4 text-right">
-                          <button
-                            type="button"
-                            onClick={() => abrirEdicaoVenda(venda)}
-                            className="inline-flex items-center gap-2 rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-semibold text-zinc-700 transition hover:border-red-300 hover:bg-red-50 hover:text-red-700"
-                          >
-                            <Pencil className="h-4 w-4" />
-                            Editar
-                          </button>
+                          <div className="flex justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => abrirEdicaoVenda(venda)}
+                              disabled={excluindoVenda === venda.id}
+                              className="inline-flex items-center gap-2 rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-semibold text-zinc-700 transition hover:border-red-300 hover:bg-red-50 hover:text-red-700 disabled:opacity-50"
+                            >
+                              <Pencil className="h-4 w-4" />
+                              Editar
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => excluirVenda(venda)}
+                              disabled={excluindoVenda === venda.id}
+                              className="inline-flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                              {excluindoVenda === venda.id
+                                ? "Apagando..."
+                                : "Apagar"}
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
