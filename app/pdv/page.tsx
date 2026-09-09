@@ -1457,7 +1457,7 @@ export default function PdvPage() {
         <div className="my-5 border-t border-zinc-200 pt-5">
           <div className="flex items-end justify-between gap-3">
             <span className="font-medium text-zinc-500">
-              "Total"
+              Total
             </span>
 
             <strong className="text-right text-4xl font-extrabold text-red-600">
@@ -1469,14 +1469,6 @@ export default function PdvPage() {
             </strong>
           </div>
 
-          {atendimentoAtual?.tipo === "comanda" && carrinho.length > 0 && (
-            <div className="mt-3 flex items-center justify-between rounded-xl bg-zinc-50 px-3 py-2 text-sm">
-              <span className="font-medium text-zinc-500">
-                Já lançado na comanda
-              </span>
-              <strong>{moeda(totalComandaAtual + total)}</strong>
-            </div>
-          )}
         </div>
         {atendimentoAtual?.tipo === "avulsa" && (
           <div className="mb-4">
@@ -1589,7 +1581,7 @@ export default function PdvPage() {
                   Total da venda
                 </p>
                 <p className="mt-1 text-4xl font-extrabold text-red-600">
-                  {moeda(totalComandaAtual)}
+                  {moeda(totalComandaAtual + total)}
                 </p>
               </div>
 
