@@ -15,6 +15,11 @@ import {
   Search,
   TrendingUp,
   WalletCards,
+  Pencil,
+  Plus,
+  Minus,
+  X,
+  Trash2,
 } from "lucide-react";
 import { supabase } from "../../lib/supabase";
 
@@ -27,6 +32,7 @@ type Venda = {
 };
 
 type ItemVenda = {
+  id: string;
   venda_id: string;
   produto_id: string;
   quantidade: number;
@@ -37,6 +43,15 @@ type ItemVenda = {
 type Produto = {
   id: string;
   nome: string;
+  preco: number | string;
+  ativo: boolean | null;
+};
+
+type ItemEdicao = {
+  item_id: string | null;
+  produto_id: string;
+  quantidade: number;
+  valor_unitario: number;
 };
 
 type PeriodoRapido = "hoje" | "7dias" | "30dias" | "mes" | "personalizado";
@@ -89,6 +104,12 @@ export default function RelatorioPage() {
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState("");
   const [busca, setBusca] = useState("");
+  const [vendaEditando, setVendaEditando] = useState<Venda | null>(null);
+  const [itensEdicao, setItensEdicao] = useState<ItemEdicao[]>([]);
+  const [formaPagamentoEdicao, setFormaPagamentoEdicao] =
+    useState<"Dinheiro" | "Cartão" | "Pix">("Dinheiro");
+  const [buscaProdutoEdicao, setBuscaProdutoEdicao] = useState("");
+  const [salvandoEdicao, setSalvandoEdicao] = useState(false);
 
   function aplicarPeriodo(periodo: PeriodoRapido) {
     setPeriodoRapido(periodo);
@@ -147,7 +168,8 @@ export default function RelatorioPage() {
 
       const { data: produtosData, error: produtosError } = await supabase
         .from("produtos")
-        .select("id, nome")
+        .select("id, nome, preco, ativo")
+        .eq("ativo", true)
         .order("nome");
 
       if (produtosError) throw produtosError;
@@ -163,7 +185,7 @@ export default function RelatorioPage() {
       const { data: itensData, error: itensError } = await supabase
         .from("itens_venda")
         .select(
-          "venda_id, produto_id, quantidade, valor_unitario, custo_unitario",
+          "id, venda_id, produto_id, quantidade, valor_unitario, custo_unitario",
         )
         .in("venda_id", vendaIds);
 
@@ -181,6 +203,123 @@ export default function RelatorioPage() {
     } finally {
       setCarregando(false);
     }
+  }
+
+  function abrirEdicaoVenda(venda: Venda) {
+    const itensVenda = itens
+      .filter((item) => item.venda_id === venda.id)
+      .map((item) => ({
+        item_id: item.id,
+        produto_id: item.produto_id,
+        quantidade: Number(item.quantidade),
+        valor_unitario: Number(item.valor_unitario),
+      }));
+
+    setVendaEditando(venda);
+    setItensEdicao(itensVenda);
+    setFormaPagamentoEdicao(venda.forma_pagamento);
+    setBuscaProdutoEdicao("");
+  }
+
+  function fecharEdicaoVenda() {
+    if (salvandoEdicao) return;
+
+    setVendaEditando(null);
+    setItensEdicao([]);
+    setBuscaProdutoEdicao("");
+  }
+
+  function alterarQuantidadeEdicao(
+    indice: number,
+    novaQuantidade: number,
+  ) {
+    if (novaQuantidade < 1) return;
+
+    setItensEdicao((atual) =>
+      atual.map((item, index) =>
+        index === indice
+          ? { ...item, quantidade: novaQuantidade }
+          : item,
+      ),
+    );
+  }
+
+  function removerItemEdicao(indice: number) {
+    setItensEdicao((atual) =>
+      atual.filter((_, index) => index !== indice),
+    );
+  }
+
+  function adicionarProdutoEdicao(produto: Produto) {
+    setItensEdicao((atual) => {
+      const indiceExistente = atual.findIndex(
+        (item) =>
+          item.produto_id === produto.id &&
+          item.item_id === null,
+      );
+
+      if (indiceExistente >= 0) {
+        return atual.map((item, index) =>
+          index === indiceExistente
+            ? { ...item, quantidade: item.quantidade + 1 }
+            : item,
+        );
+      }
+
+      return [
+        ...atual,
+        {
+          item_id: null,
+          produto_id: produto.id,
+          quantidade: 1,
+          valor_unitario: Number(produto.preco),
+        },
+      ];
+    });
+
+    setBuscaProdutoEdicao("");
+  }
+
+  async function salvarEdicaoVenda() {
+    if (!vendaEditando) return;
+
+    if (itensEdicao.length === 0) {
+      alert("A venda precisa ter pelo menos um item.");
+      return;
+    }
+
+    setSalvandoEdicao(true);
+
+    const { data, error } = await supabase.rpc(
+      "editar_venda_pdv",
+      {
+        p_venda_id: vendaEditando.id,
+        p_forma_pagamento: formaPagamentoEdicao,
+        p_itens: itensEdicao.map((item) => ({
+          item_id: item.item_id,
+          produto_id: item.produto_id,
+          quantidade: item.quantidade,
+        })),
+      },
+    );
+
+    setSalvandoEdicao(false);
+
+    if (error) {
+      alert(error.message);
+      return;
+    }
+
+    alert(
+      `Venda #${data?.numero ?? vendaEditando.numero} atualizada. Novo total: ${moeda(
+        Number(data?.total ?? 0),
+      )}.`,
+    );
+
+    setVendaEditando(null);
+    setItensEdicao([]);
+    setBuscaProdutoEdicao("");
+    await carregarRelatorio();
   }
 
   useEffect(() => {
@@ -280,6 +419,26 @@ export default function RelatorioPage() {
       );
     });
   }, [vendas, busca]);
+
+  const produtosFiltradosEdicao = useMemo(() => {
+    const termo = buscaProdutoEdicao.trim().toLowerCase();
+
+    if (!termo) return produtos.slice(0, 8);
+
+    return produtos
+      .filter((produto) =>
+        produto.nome.toLowerCase().includes(termo),
+      )
+      .slice(0, 8);
+  }, [produtos, buscaProdutoEdicao]);
+
+  const totalEdicao = useMemo(() => {
+    return itensEdicao.reduce(
+      (soma, item) =>
+        soma + item.valor_unitario * item.quantidade,
+      0,
+    );
+  }, [itensEdicao]);
 
   const cards = [
     {
@@ -551,6 +710,7 @@ export default function RelatorioPage() {
                       <th className="p-4 text-left">Data</th>
                       <th className="p-4 text-left">Pagamento</th>
                       <th className="p-4 text-right">Total</th>
+                      <th className="p-4 text-right">Ações</th>
                     </tr>
                   </thead>
 
@@ -580,6 +740,17 @@ export default function RelatorioPage() {
 
                         <td className="p-4 text-right font-bold">
                           {moeda(Number(venda.total))}
+                        </td>
+
+                        <td className="p-4 text-right">
+                          <button
+                            type="button"
+                            onClick={() => abrirEdicaoVenda(venda)}
+                            className="inline-flex items-center gap-2 rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-semibold text-zinc-700 transition hover:border-red-300 hover:bg-red-50 hover:text-red-700"
+                          >
+                            <Pencil className="h-4 w-4" />
+                            Editar
+                          </button>
                         </td>
                       </tr>
                     ))}
@@ -654,6 +825,215 @@ export default function RelatorioPage() {
           </section>
         </div>
       </div>
+
+      {vendaEditando && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-3xl bg-white shadow-2xl">
+            <div className="sticky top-0 z-10 flex items-center justify-between border-b border-zinc-200 bg-white p-5">
+              <div>
+                <p className="text-sm font-semibold text-red-600">
+                  Editar pedido
+                </p>
+                <h2 className="text-2xl font-extrabold">
+                  Venda #{vendaEditando.numero}
+                </h2>
+              </div>
+
+              <button
+                type="button"
+                onClick={fecharEdicaoVenda}
+                disabled={salvandoEdicao}
+                className="flex h-10 w-10 items-center justify-center rounded-xl border border-zinc-300 text-zinc-600 transition hover:bg-zinc-100 disabled:opacity-50"
+                title="Fechar"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="grid gap-6 p-5 lg:grid-cols-[1fr_320px]">
+              <div>
+                <div className="mb-4 flex items-center justify-between">
+                  <h3 className="text-lg font-bold">Itens da venda</h3>
+                  <span className="text-sm text-zinc-500">
+                    {itensEdicao.length} item(ns)
+                  </span>
+                </div>
+
+                <div className="space-y-3">
+                  {itensEdicao.map((item, indice) => {
+                    const produto = produtos.find(
+                      (produtoAtual) =>
+                        produtoAtual.id === item.produto_id,
+                    );
+
+                    return (
+                      <div
+                        key={`${item.item_id ?? "novo"}-${item.produto_id}-${indice}`}
+                        className="flex flex-col gap-3 rounded-2xl border border-zinc-200 p-4 sm:flex-row sm:items-center sm:justify-between"
+                      >
+                        <div className="min-w-0">
+                          <p className="truncate font-bold">
+                            {produto?.nome ?? "Produto"}
+                          </p>
+                          <p className="text-sm text-zinc-500">
+                            {moeda(item.valor_unitario)} cada
+                          </p>
+                        </div>
+
+                        <div className="flex items-center justify-between gap-3 sm:justify-end">
+                          <div className="flex items-center rounded-xl border border-zinc-300 bg-white">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                alterarQuantidadeEdicao(
+                                  indice,
+                                  item.quantidade - 1,
+                                )
+                              }
+                              disabled={item.quantidade <= 1}
+                              className="flex h-10 w-10 items-center justify-center text-zinc-600 disabled:opacity-30"
+                            >
+                              <Minus className="h-4 w-4" />
+                            </button>
+
+                            <span className="min-w-10 text-center font-bold">
+                              {item.quantidade}
+                            </span>
+
+                            <button
+                              type="button"
+                              onClick={() =>
+                                alterarQuantidadeEdicao(
+                                  indice,
+                                  item.quantidade + 1,
+                                )
+                              }
+                              className="flex h-10 w-10 items-center justify-center text-zinc-600"
+                            >
+                              <Plus className="h-4 w-4" />
+                            </button>
+                          </div>
+
+                          <p className="w-24 text-right font-extrabold">
+                            {moeda(
+                              item.valor_unitario *
+                                item.quantidade,
+                            )}
+                          </p>
+
+                          <button
+                            type="button"
+                            onClick={() => removerItemEdicao(indice)}
+                            className="flex h-10 w-10 items-center justify-center rounded-xl border border-red-200 bg-red-50 text-red-600 transition hover:bg-red-100"
+                            title="Remover item"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="mt-6 rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+                  <h3 className="mb-3 font-bold">Adicionar produto</h3>
+
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
+                    <input
+                      type="search"
+                      value={buscaProdutoEdicao}
+                      onChange={(event) =>
+                        setBuscaProdutoEdicao(event.target.value)
+                      }
+                      placeholder="Buscar produto..."
+                      className="w-full rounded-xl border border-zinc-300 bg-white py-3 pl-10 pr-4 outline-none focus:border-red-500"
+                    />
+                  </div>
+
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    {produtosFiltradosEdicao.map((produto) => (
+                      <button
+                        key={produto.id}
+                        type="button"
+                        onClick={() =>
+                          adicionarProdutoEdicao(produto)
+                        }
+                        className="flex items-center justify-between rounded-xl border border-zinc-200 bg-white p-3 text-left transition hover:border-red-300 hover:bg-red-50"
+                      >
+                        <span className="truncate font-semibold">
+                          {produto.nome}
+                        </span>
+                        <span className="ml-3 shrink-0 text-sm font-bold text-red-600">
+                          {moeda(Number(produto.preco))}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <aside className="h-fit rounded-2xl border border-zinc-200 bg-zinc-50 p-5">
+                <h3 className="font-bold">Resumo da edição</h3>
+
+                <div className="mt-5">
+                  <p className="mb-2 text-sm font-semibold text-zinc-600">
+                    Forma de pagamento
+                  </p>
+
+                  <div className="grid gap-2">
+                    {(["Dinheiro", "Cartão", "Pix"] as const).map(
+                      (forma) => (
+                        <button
+                          key={forma}
+                          type="button"
+                          onClick={() =>
+                            setFormaPagamentoEdicao(forma)
+                          }
+                          className={`rounded-xl border px-4 py-3 text-left font-semibold transition ${
+                            formaPagamentoEdicao === forma
+                              ? "border-red-600 bg-red-50 text-red-700"
+                              : "border-zinc-300 bg-white text-zinc-700"
+                          }`}
+                        >
+                          {forma}
+                        </button>
+                      ),
+                    )}
+                  </div>
+                </div>
+
+                <div className="mt-6 border-t border-zinc-200 pt-5">
+                  <p className="text-sm text-zinc-500">
+                    Novo subtotal
+                  </p>
+                  <p className="mt-1 text-3xl font-extrabold text-red-600">
+                    {moeda(totalEdicao)}
+                  </p>
+                  <p className="mt-2 text-xs leading-relaxed text-zinc-500">
+                    O valor final será recalculado pelo banco,
+                    preservando eventual desconto já registrado na venda.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={salvarEdicaoVenda}
+                  disabled={
+                    salvandoEdicao ||
+                    itensEdicao.length === 0
+                  }
+                  className="mt-6 w-full rounded-xl bg-red-600 px-5 py-3 font-bold text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {salvandoEdicao
+                    ? "Salvando..."
+                    : "Salvar alterações"}
+                </button>
+              </aside>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
