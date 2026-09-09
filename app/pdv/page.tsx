@@ -98,6 +98,7 @@ export default function PdvPage() {
   const [modalNovaComanda, setModalNovaComanda] = useState(false);
   const [clienteNovaComanda, setClienteNovaComanda] = useState("");
   const [abrindoComanda, setAbrindoComanda] = useState(false);
+  const [fechandoComandaId, setFechandoComandaId] = useState<string | null>(null);
 
   const atendimentoAtual =
     atendimentos.find((item) => item.chave === atendimentoAtivo) ??
@@ -281,6 +282,69 @@ export default function PdvPage() {
       );
     } finally {
       setFinalizando(false);
+    }
+  }
+
+  async function fecharComandaPeloX(
+    atendimento: Atendimento,
+    event: MouseEvent<HTMLButtonElement>,
+  ) {
+    event.stopPropagation();
+
+    if (atendimento.tipo !== "comanda" || !atendimento.comandaId) return;
+
+    const comanda = comandasAbertas.find(
+      (item) => item.id === atendimento.comandaId,
+    );
+    const totalComanda = Number(comanda?.total ?? 0);
+    const nome = atendimento.clienteNome || "Cliente";
+
+    if (atendimento.carrinho.length > 0) {
+      setMensagem(
+        `A Comanda #${atendimento.numero} possui itens ainda não enviados. Envie ou remova esses itens antes de fechar.`,
+      );
+      return;
+    }
+
+    if (totalComanda > 0) {
+      setMensagem(
+        `A Comanda #${atendimento.numero} possui ${moeda(totalComanda)} em consumo. Faça o fechamento pela tela de Comandas para registrar o pagamento.`,
+      );
+      return;
+    }
+
+    const confirmar = window.confirm(
+      `Fechar a Comanda #${atendimento.numero} de ${nome}?`,
+    );
+    if (!confirmar) return;
+
+    setFechandoComandaId(atendimento.comandaId);
+    setMensagem("");
+
+    try {
+      const { error } = await supabase
+        .from("comandas")
+        .update({ status: "Fechada" })
+        .eq("id", atendimento.comandaId)
+        .eq("status", "Aberta");
+
+      if (error) throw new Error(error.message);
+
+      if (atendimentoAtivo === atendimento.chave) {
+        setAtendimentoAtivo("avulsa");
+      }
+
+      setMensagem(`Comanda #${atendimento.numero} encerrada.`);
+      await carregarComandas();
+    } catch (error) {
+      console.error("Erro ao fechar comanda vazia:", error);
+      setMensagem(
+        error instanceof Error
+          ? error.message
+          : "Não foi possível fechar a comanda.",
+      );
+    } finally {
+      setFechandoComandaId(null);
     }
   }
 
@@ -731,25 +795,66 @@ export default function PdvPage() {
         </div>
 
         <div className="mb-4 flex items-center gap-2 overflow-x-auto rounded-2xl border border-zinc-200 bg-white p-2 shadow-sm">
-          {atendimentos.map((atendimento) => (
-            <button
-              key={atendimento.chave}
-              type="button"
-              onClick={() => {
-                setAtendimentoAtivo(atendimento.chave);
-                setMensagem("");
-              }}
-              className={`whitespace-nowrap rounded-xl px-4 py-3 text-sm font-bold transition ${
-                atendimento.chave === atendimentoAtivo
-                  ? "bg-red-600 text-white shadow-sm"
-                  : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200"
-              }`}
-            >
-              {atendimento.tipo === "avulsa"
-                ? "Venda avulsa"
-                : `#${atendimento.numero} ${atendimento.clienteNome || "Cliente"}`}
-            </button>
-          ))}
+          {atendimentos.map((atendimento) => {
+            const ativo = atendimento.chave === atendimentoAtivo;
+
+            if (atendimento.tipo === "avulsa") {
+              return (
+                <button
+                  key={atendimento.chave}
+                  type="button"
+                  onClick={() => {
+                    setAtendimentoAtivo(atendimento.chave);
+                    setMensagem("");
+                  }}
+                  className={`whitespace-nowrap rounded-xl px-4 py-3 text-sm font-bold transition ${
+                    ativo
+                      ? "bg-red-600 text-white shadow-sm"
+                      : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200"
+                  }`}
+                >
+                  Venda avulsa
+                </button>
+              );
+            }
+
+            return (
+              <div
+                key={atendimento.chave}
+                className={`flex shrink-0 items-center overflow-hidden rounded-xl text-sm font-bold transition ${
+                  ativo
+                    ? "bg-red-600 text-white shadow-sm"
+                    : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200"
+                }`}
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAtendimentoAtivo(atendimento.chave);
+                    setMensagem("");
+                  }}
+                  className="whitespace-nowrap py-3 pl-4 pr-2"
+                >
+                  #{atendimento.numero} {atendimento.clienteNome || "Cliente"}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={(event) => fecharComandaPeloX(atendimento, event)}
+                  disabled={fechandoComandaId === atendimento.comandaId}
+                  className={`mr-1 flex h-7 w-7 items-center justify-center rounded-lg transition ${
+                    ativo
+                      ? "hover:bg-red-700"
+                      : "text-zinc-500 hover:bg-zinc-300 hover:text-red-700"
+                  } disabled:opacity-40`}
+                  title="Fechar comanda"
+                  aria-label={`Fechar Comanda #${atendimento.numero}`}
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            );
+          })}
 
           <button
             type="button"
