@@ -9,6 +9,7 @@ import {
   CreditCard,
   House,
   Plus,
+  Printer,
   QrCode,
   RefreshCw,
   ReceiptText,
@@ -324,12 +325,222 @@ export default function ComandasPage() {
     await carregar();
   }
 
+  function imprimirComanda(
+    comanda: Comanda,
+    forma: "Dinheiro" | "Cartão" | "Pix",
+    numeroVenda: number | string,
+    totalFinal: number,
+  ) {
+    const pedidosComanda = pedidos
+      .filter(
+        (pedido) =>
+          pedido.comanda_id === comanda.id &&
+          pedido.status !== "Cancelado",
+      )
+      .sort(
+        (a, b) =>
+          new Date(a.criado_em).getTime() -
+          new Date(b.criado_em).getTime(),
+      );
+
+    const linhasItens = pedidosComanda
+      .flatMap((pedido) =>
+        itens
+          .filter((item) => item.pedido_id === pedido.id)
+          .map((item) => {
+            const extrasItem = extras.filter(
+              (extra) => extra.item_id === item.id,
+            );
+
+            const extrasHtml = extrasItem
+              .map(
+                (extra) =>
+                  `<div class="extra">+ ${extra.nome}</div>`,
+              )
+              .join("");
+
+            const subtotalItem =
+              Number(item.valor_unitario) *
+              Number(item.quantidade);
+
+            return `
+              <div class="item">
+                <div class="linha">
+                  <span>${item.quantidade}x ${item.nome}</span>
+                  <strong>${moeda(subtotalItem)}</strong>
+                </div>
+                ${extrasHtml}
+              </div>
+            `;
+          }),
+      )
+      .join("");
+
+    const janela = window.open(
+      "",
+      "_blank",
+      "width=420,height=720",
+    );
+
+    if (!janela) {
+      alert(
+        "O navegador bloqueou a janela de impressão. Permita pop-ups para este site.",
+      );
+      return;
+    }
+
+    const dataHora = new Date().toLocaleString("pt-BR", {
+      timeZone: "America/Sao_Paulo",
+    });
+
+    janela.document.write(`
+      <!doctype html>
+      <html lang="pt-BR">
+        <head>
+          <meta charset="utf-8" />
+          <title>Comanda #${comanda.numero}</title>
+          <style>
+            @page {
+              size: 80mm auto;
+              margin: 4mm;
+            }
+
+            * {
+              box-sizing: border-box;
+            }
+
+            body {
+              width: 72mm;
+              margin: 0 auto;
+              color: #000;
+              background: #fff;
+              font-family: Arial, Helvetica, sans-serif;
+              font-size: 12px;
+              line-height: 1.35;
+            }
+
+            .centro {
+              text-align: center;
+            }
+
+            h1 {
+              margin: 0;
+              font-size: 18px;
+            }
+
+            .subtitulo {
+              margin-top: 3px;
+              font-size: 11px;
+            }
+
+            .separador {
+              margin: 10px 0;
+              border-top: 1px dashed #000;
+            }
+
+            .linha {
+              display: flex;
+              justify-content: space-between;
+              gap: 10px;
+            }
+
+            .item {
+              margin: 7px 0;
+            }
+
+            .extra {
+              margin-left: 12px;
+              font-size: 11px;
+            }
+
+            .total {
+              margin-top: 8px;
+              font-size: 17px;
+              font-weight: 700;
+            }
+
+            .rodape {
+              margin-top: 14px;
+              text-align: center;
+              font-size: 10px;
+            }
+
+            @media print {
+              body {
+                width: auto;
+              }
+            }
+          </style>
+        </head>
+
+        <body>
+          <div class="centro">
+            <h1>Silvas' Pizza Frita</h1>
+            <div class="subtitulo">COMPROVANTE DA COMANDA</div>
+          </div>
+
+          <div class="separador"></div>
+
+          <div><strong>Comanda:</strong> #${comanda.numero}</div>
+          <div><strong>Cliente:</strong> ${
+            comanda.cliente_nome || "Cliente sem nome"
+          }</div>
+          <div><strong>Venda:</strong> #${numeroVenda}</div>
+          <div><strong>Data:</strong> ${dataHora}</div>
+
+          <div class="separador"></div>
+
+          ${linhasItens || "<div>Nenhum item.</div>"}
+
+          <div class="separador"></div>
+
+          <div class="linha">
+            <span>Pagamento</span>
+            <strong>${forma}</strong>
+          </div>
+
+          <div class="linha total">
+            <span>TOTAL</span>
+            <span>${moeda(totalFinal)}</span>
+          </div>
+
+          <div class="separador"></div>
+
+          <div class="rodape">
+            Obrigado pela preferência!
+          </div>
+
+          <script>
+            window.onload = function () {
+              window.print();
+            };
+
+            window.onafterprint = function () {
+              window.close();
+            };
+          </script>
+        </body>
+      </html>
+    `);
+
+    janela.document.close();
+  }
+
   async function fecharComanda(
     comandaId: string,
     forma: "Dinheiro" | "Cartão" | "Pix",
   ) {
+    const comanda = comandas.find(
+      (item) => item.id === comandaId,
+    );
+
+    if (!comanda) {
+      alert("Comanda não encontrada.");
+      return;
+    }
+
     const confirmar = window.confirm(
-      `Fechar esta comanda em ${forma}?`,
+      `Fechar a Comanda #${comanda.numero} em ${forma}?`,
     );
 
     if (!confirmar) return;
@@ -351,11 +562,20 @@ export default function ComandasPage() {
       return;
     }
 
-    alert(
-      `Comanda fechada. Venda #${data?.numero_venda} registrada em ${moeda(
+    const imprimir = window.confirm(
+      `Comanda fechada com sucesso.\n\nVenda #${data?.numero_venda} - ${moeda(
         Number(data?.total ?? 0),
-      )}.`,
+      )}\n\nDeseja imprimir a comanda?`,
     );
+
+    if (imprimir) {
+      imprimirComanda(
+        comanda,
+        forma,
+        data?.numero_venda ?? "",
+        Number(data?.total ?? comanda.total ?? 0),
+      );
+    }
 
     await carregar();
   }
@@ -709,9 +929,10 @@ export default function ComandasPage() {
                         </p>
                       ) : (
                         <div>
-                          <p className="mb-3 text-center text-sm font-semibold">
-                            Fechar comanda
-                          </p>
+                          <div className="mb-3 flex items-center justify-center gap-2 text-sm font-semibold">
+                            <Printer className="h-4 w-4 text-zinc-500" />
+                            <span>Fechar comanda</span>
+                          </div>
 
                           <div className="grid grid-cols-3 gap-2">
                             <button
